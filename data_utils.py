@@ -9,8 +9,8 @@ import numpy as np
 import torch
 from torch.utils.data import Dataset
 
-# Actions: 0=Up, 1=Down, 2=Left, 3=Right
-PAD_ACTION = -1
+# Actions: 0=Up, 1=Down, 2=Left, 3=Right, 4=PAD
+PAD_ACTION = 4
 ACTIONS = {
     0: (-1, 0),
     1: (1, 0),

@@ -8,16 +8,14 @@ import matplotlib.pyplot as plt
 import torch
 
 from data_utils import ACTIONS, GridDenoiseDataset, PAD_ACTION
-from model import PAD_TOKEN_ID, FlowMatchingTransformer
+from model import FlowMatchingTransformer
 
 
 def decode_actions_from_embeddings(model: FlowMatchingTransformer, seq_emb: torch.Tensor) -> torch.Tensor:
-    # seq_emb: (L, D) -> logits: (L, 5; PAD 포함) -> softmax -> multinomial sampling
+    # seq_emb: (L, D) -> logits: (L, 5; includes PAD=4) -> softmax -> multinomial sampling
     logits = model.action_logits_from_embeddings(seq_emb)
     probs = torch.softmax(logits, dim=-1)
-    token_ids = torch.multinomial(probs, num_samples=1).squeeze(-1)
-    # Convert PAD token id(4) back to PAD action value(-1)
-    return torch.where(token_ids == PAD_TOKEN_ID, torch.full_like(token_ids, PAD_ACTION), token_ids)
+    return torch.multinomial(probs, num_samples=1).squeeze(-1)
 
 
 def rollout(start: Tuple[int, int], actions: List[int], grid):
@@ -25,8 +23,8 @@ def rollout(start: Tuple[int, int], actions: List[int], grid):
     traj = [pos]
     h, w = grid.shape
     for a in actions:
-        # PAD(-1) is not a real action. Stop rollout when PAD begins.
-        if a == -1:
+        # PAD(4) is not a real action. Stop rollout when PAD begins.
+        if a == PAD_ACTION:
             break
         dr, dc = ACTIONS[a]
         nr, nc = pos[0] + dr, pos[1] + dc
@@ -101,7 +99,7 @@ def run(args):
     # So we use full-length mask and random initial actions for the entire sequence.
     mask = torch.ones((1, max_seq_len), device=device)
 
-    noisy_actions = torch.randint(0, 4, size=(1, max_seq_len), device=device)
+    noisy_actions = torch.randint(0, 5, size=(1, max_seq_len), device=device)
 
     with torch.no_grad():
         x0 = model.embed_actions(noisy_actions)
