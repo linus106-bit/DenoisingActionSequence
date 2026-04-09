@@ -15,17 +15,42 @@ def _tokenize_for_print(tokens: torch.Tensor) -> list[int]:
     return [PAD_ACTION if t == PAD_TOKEN_ID else int(t) for t in arr]
 
 
+def _make_t_scaled_noisy(clean: torch.Tensor, valid_mask: torch.Tensor, t: torch.Tensor) -> torch.Tensor:
+    """
+    Build x0 tokens from clean actions by replacing exactly floor(len(actions) * t)
+    valid positions with random actions per sample.
+    """
+    noisy = clean.clone()
+    batch = clean.shape[0]
+    for i in range(batch):
+        valid_idx = torch.nonzero(valid_mask[i] > 0.5, as_tuple=False).squeeze(-1)
+        valid_len = int(valid_idx.numel())
+        n_replace = int(valid_len * float(t[i].item()))
+        if valid_len == 0 or n_replace <= 0:
+            continue
+
+        perm = torch.randperm(valid_len, device=clean.device)
+        chosen = valid_idx[perm[:n_replace]]
+        original = clean[i, chosen]
+        # Ensure replacement action differs from original action (0~3).
+        delta = torch.randint(1, 4, size=original.shape, device=clean.device)
+        noisy[i, chosen] = (original + delta) % 4
+    return noisy
+
+
 def fm_loss(model, batch, device, return_debug: bool = False):
     map_tensor = batch["map"].to(device)
-    noisy = batch["noisy_actions"].to(device)
     clean = batch["clean_actions"].to(device)
+    valid_mask = batch["mask"].to(device)
     # Train on full max_seq_len positions to enforce fixed-length behavior.
     mask = torch.ones_like(batch["mask"], device=device)
+
+    t = torch.rand(clean.shape[0], device=device)
+    noisy = _make_t_scaled_noisy(clean, valid_mask, t)
 
     x0 = model.embed_actions(noisy)
     x1 = model.embed_actions(clean)
 
-    t = torch.rand(x0.shape[0], device=device)
     xt = (1.0 - t[:, None, None]) * x0 + t[:, None, None] * x1
     u_t = x1 - x0
 
