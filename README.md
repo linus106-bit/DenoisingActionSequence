@@ -20,3 +20,9 @@ python eval.py --ckpt checkpoints/fm_denoiser.pt --steps 25 --plot_out artifacts
 - `numpy`
 - `networkx`
 - `matplotlib`
+
+## Padding 규칙
+
+- 액션 시퀀스에서 `-1`은 **패딩(PAD)** 값입니다.
+- 실제 액션은 `0,1,2,3`만 사용합니다.
+- 모델 내부에서는 `-1`을 PAD 토큰 id(`4`)로 매핑해 임베딩합니다.

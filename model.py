@@ -5,6 +5,9 @@ import math
 import torch
 import torch.nn as nn
 
+PAD_ACTION_VALUE = -1
+PAD_TOKEN_ID = 4
+
 
 class SinusoidalTimeEmbedding(nn.Module):
     def __init__(self, dim: int):
@@ -65,9 +68,9 @@ class FlowMatchingTransformer(nn.Module):
         self.out = nn.Linear(embed_dim, embed_dim)
 
     def embed_actions(self, actions: torch.Tensor) -> torch.Tensor:
-        # actions with -1 as PAD
+        # actions use -1 as PAD in dataset, map it to token id 4
         tokens = actions.clone()
-        tokens = torch.where(tokens < 0, torch.full_like(tokens, 4), tokens)
+        tokens = torch.where(tokens == PAD_ACTION_VALUE, torch.full_like(tokens, PAD_TOKEN_ID), tokens)
         return self.action_embed(tokens)
 
     def action_logits_from_embeddings(self, seq_emb: torch.Tensor) -> torch.Tensor:

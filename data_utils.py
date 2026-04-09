@@ -10,6 +10,7 @@ import torch
 from torch.utils.data import Dataset
 
 # Actions: 0=Up, 1=Down, 2=Left, 3=Right
+PAD_ACTION = -1
 ACTIONS = {
     0: (-1, 0),
     1: (1, 0),
@@ -112,7 +113,7 @@ class GridDenoiseDataset(Dataset):
         return self.n_samples
 
     def _pad(self, actions: Sequence[int]) -> Tuple[np.ndarray, np.ndarray]:
-        arr = np.full((self.max_seq_len,), fill_value=-1, dtype=np.int64)
+        arr = np.full((self.max_seq_len,), fill_value=PAD_ACTION, dtype=np.int64)
         mask = np.zeros((self.max_seq_len,), dtype=np.float32)
         L = min(len(actions), self.max_seq_len)
         arr[:L] = np.array(actions[:L], dtype=np.int64)
