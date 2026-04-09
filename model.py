@@ -50,7 +50,7 @@ class FlowMatchingTransformer(nn.Module):
         super().__init__()
         self.embed_dim = embed_dim
         # action tokens: 0..3 + PAD(4)
-        self.action_embed = nn.Embedding(max_actions, embed_dim)
+        self.action_embed = nn.Embedding(max_actions, embed_dim, padding_idx=PAD_TOKEN_ID)
         self.map_encoder = MapEncoder(out_dim=embed_dim)
         self.time_embed = nn.Sequential(
             SinusoidalTimeEmbedding(embed_dim),

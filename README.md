@@ -29,4 +29,5 @@ python eval.py --ckpt checkpoints/fm_denoiser.pt --steps 25 --plot_out artifacts
 - 액션 시퀀스에서 `-1`은 **패딩(PAD)** 값입니다.
 - 실제 액션은 `0,1,2,3`만 사용합니다.
 - 모델 내부에서는 `-1`을 PAD 토큰 id(`4`)로 매핑해 임베딩합니다.
+- `nn.Embedding(..., padding_idx=4)`를 사용해 PAD 임베딩은 학습 업데이트에서 제외됩니다.
 - 경로 rollout/시각화에서는 `-1`이 나오면 해당 시점에서 경로 전개를 종료합니다.
