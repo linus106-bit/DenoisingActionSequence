@@ -89,14 +89,16 @@ def run(args):
         x = model.embed_actions(noisy_actions)
         steps = args.steps
         dt = 1.0 / steps
+        valid_len = int(mask.sum().item())
         for i in range(steps):
             t = torch.full((1,), i / steps, device=device)
             v = model(x, t, map_tensor, mask)
             x = x + dt * v
+            step_pred = decode_actions_from_embeddings(model, x.squeeze(0)).cpu()[:valid_len].tolist()
+            print(f"[step {i + 1:02d}/{steps}] decoded actions: {step_pred}")
 
         pred = decode_actions_from_embeddings(model, x.squeeze(0)).cpu()
 
-    valid_len = int(mask.sum().item())
     noisy_list = noisy_actions[0, :valid_len].cpu().tolist()
     clean_list = clean_actions[0, :valid_len].cpu().tolist()
     pred_list = pred[:valid_len].tolist()
