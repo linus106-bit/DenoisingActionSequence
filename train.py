@@ -6,19 +6,25 @@ from pathlib import Path
 import torch
 from torch.utils.data import DataLoader
 
-from data_utils import PAD_ACTION, GridDenoiseDataset
-from model import PAD_TOKEN_ID, FlowMatchingTransformer
+from data_utils import GridDenoiseDataset
+from model import FlowMatchingTransformer
 
 
 def _tokenize_for_print(tokens: torch.Tensor) -> list[int]:
-    arr = tokens.detach().cpu().tolist()
-    return [PAD_ACTION if t == PAD_TOKEN_ID else int(t) for t in arr]
+    return [int(t) for t in tokens.detach().cpu().tolist()]
 
 
-def _make_t_scaled_noisy(clean: torch.Tensor, valid_mask: torch.Tensor, t: torch.Tensor) -> torch.Tensor:
+def _make_t_scaled_noisy(
+    clean: torch.Tensor,
+    valid_mask: torch.Tensor,
+    t: torch.Tensor,
+    pad_noise_prob: float = 1.0,
+) -> torch.Tensor:
     """
-    Build x0 tokens from clean actions by replacing exactly floor(len(actions) * t)
-    valid positions with random actions per sample.
+    Build x0 tokens from clean actions.
+    - Valid positions: replace exactly floor(valid_len * t) positions with
+      a different real action in {0,1,2,3}.
+    - Padded positions: randomize over real action space {0,1,2,3}.
     """
     noisy = clean.clone()
     batch = clean.shape[0]
@@ -27,18 +33,25 @@ def _make_t_scaled_noisy(clean: torch.Tensor, valid_mask: torch.Tensor, t: torch
         valid_len = int(valid_idx.numel())
         n_replace = int(valid_len * float(t[i].item()))
         if valid_len == 0 or n_replace <= 0:
-            continue
+            pass
+        else:
+            perm = torch.randperm(valid_len, device=clean.device)
+            chosen = valid_idx[perm[:n_replace]]
+            original = clean[i, chosen]
+            # Ensure replacement action differs from original action (0~3).
+            delta = torch.randint(1, 4, size=original.shape, device=clean.device)
+            noisy[i, chosen] = (original + delta) % 4
 
-        perm = torch.randperm(valid_len, device=clean.device)
-        chosen = valid_idx[perm[:n_replace]]
-        original = clean[i, chosen]
-        # Ensure replacement action differs from original action (0~3).
-        delta = torch.randint(1, 4, size=original.shape, device=clean.device)
-        noisy[i, chosen] = (original + delta) % 4
+        pad_idx = torch.nonzero(valid_mask[i] < 0.5, as_tuple=False).squeeze(-1)
+        if pad_idx.numel() > 0:
+            apply_mask = torch.rand(pad_idx.numel(), device=clean.device) < pad_noise_prob
+            chosen_pad_idx = pad_idx[apply_mask]
+            if chosen_pad_idx.numel() > 0:
+                noisy[i, chosen_pad_idx] = torch.randint(0, 4, size=(chosen_pad_idx.numel(),), device=clean.device)
     return noisy
 
 
-def fm_loss(model, batch, device, return_debug: bool = False):
+def fm_loss(model, batch, device, return_debug: bool = False, pad_noise_prob: float = 1.0):
     map_tensor = batch["map"].to(device)
     clean = batch["clean_actions"].to(device)
     valid_mask = batch["mask"].to(device)
@@ -46,7 +59,7 @@ def fm_loss(model, batch, device, return_debug: bool = False):
     mask = torch.ones_like(batch["mask"], device=device)
 
     t = torch.rand(clean.shape[0], device=device)
-    noisy = _make_t_scaled_noisy(clean, valid_mask, t)
+    noisy = _make_t_scaled_noisy(clean, valid_mask, t, pad_noise_prob=pad_noise_prob)
 
     x0 = model.embed_actions(noisy)
     x1 = model.embed_actions(clean)
@@ -89,9 +102,9 @@ def train(args):
             opt.zero_grad(set_to_none=True)
             need_debug = epoch == 1 and running == 0.0
             if need_debug:
-                loss, dbg = fm_loss(model, batch, device, return_debug=True)
+                loss, dbg = fm_loss(model, batch, device, return_debug=True, pad_noise_prob=args.pad_noise_prob)
             else:
-                loss = fm_loss(model, batch, device)
+                loss = fm_loss(model, batch, device, pad_noise_prob=args.pad_noise_prob)
             loss.backward()
             opt.step()
             running += loss.item()
@@ -123,6 +136,7 @@ if __name__ == "__main__":
     p.add_argument("--layers", type=int, default=3)
     p.add_argument("--heads", type=int, default=4)
     p.add_argument("--lr", type=float, default=2e-3)
+    p.add_argument("--pad_noise_prob", type=float, default=1.0)
     p.add_argument("--out", type=str, default="checkpoints/fm_denoiser.pt")
     args = p.parse_args()
     train(args)

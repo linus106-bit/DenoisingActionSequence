@@ -5,7 +5,7 @@ import math
 import torch
 import torch.nn as nn
 
-PAD_ACTION_VALUE = -1
+PAD_ACTION_VALUE = 4
 PAD_TOKEN_ID = 4
 
 
@@ -68,10 +68,10 @@ class FlowMatchingTransformer(nn.Module):
         self.out = nn.Linear(embed_dim, embed_dim)
 
     def embed_actions(self, actions: torch.Tensor) -> torch.Tensor:
-        # actions use -1 as PAD in dataset, map it to token id 4
-        tokens = actions.clone()
-        tokens = torch.where(tokens == PAD_ACTION_VALUE, torch.full_like(tokens, PAD_TOKEN_ID), tokens)
-        return self.action_embed(tokens)
+        # actions already use 0..3 + PAD(4)
+        if actions.dtype != torch.long:
+            actions = actions.long()
+        return self.action_embed(actions)
 
     def action_logits_from_embeddings(self, seq_emb: torch.Tensor) -> torch.Tensor:
         """
