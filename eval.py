@@ -36,6 +36,12 @@ def rollout(start: Tuple[int, int], actions: List[int], grid):
     return traj
 
 
+def trim_at_pad(actions: List[int]) -> List[int]:
+    if PAD_ACTION in actions:
+        return actions[: actions.index(PAD_ACTION)]
+    return actions
+
+
 def plot_paths(
     grid,
     start,
@@ -85,18 +91,17 @@ def run(args):
     model.load_state_dict(ckpt["model"])
     model.eval()
 
-    ds = GridDenoiseDataset(n_samples=1, max_seq_len=cfg["max_seq_len"])
+    max_seq_len = args.max_seq_len if args.max_seq_len is not None else cfg["max_seq_len"]
+    ds = GridDenoiseDataset(n_samples=1, max_seq_len=max_seq_len)
     batch = ds[0]
 
     map_tensor = batch["map"].unsqueeze(0).to(device)
     clean_actions = batch["clean_actions"].unsqueeze(0).to(device)
-    mask = batch["mask"].unsqueeze(0).to(device)
-    valid_mask = mask > 0.5
+    # Generation mode: model should produce a sequence within max_seq_len from map only.
+    # So we use full-length mask and random initial actions for the entire sequence.
+    mask = torch.ones((1, max_seq_len), device=device)
 
-    # Eval setting: use fully noisy actions (all valid steps are random 0~3)
-    noisy_actions = torch.full_like(clean_actions, fill_value=PAD_ACTION)
-    random_actions = torch.randint(0, 4, size=clean_actions.shape, device=device)
-    noisy_actions = torch.where(valid_mask, random_actions, noisy_actions)
+    noisy_actions = torch.randint(0, 4, size=(1, max_seq_len), device=device)
 
     with torch.no_grad():
         x0 = model.embed_actions(noisy_actions)
@@ -111,7 +116,7 @@ def run(args):
         x = x0.clone()
         steps = args.steps
         dt = 1.0 / steps
-        valid_len = int(mask.sum().item())
+        valid_len = max_seq_len
         for i in range(steps):
             t = torch.full((1,), i / steps, device=device)
             v = model(x, t, map_tensor, mask)
@@ -121,10 +126,10 @@ def run(args):
 
         pred = decode_actions_from_embeddings(model, x.squeeze(0)).cpu()
 
-    noisy_list = noisy_actions[0, :valid_len].cpu().tolist()
-    one_step_list = pred_one[:valid_len].tolist()
-    clean_list = clean_actions[0, :valid_len].cpu().tolist()
-    pred_list = pred[:valid_len].tolist()
+    noisy_list = trim_at_pad(noisy_actions[0, :valid_len].cpu().tolist())
+    one_step_list = trim_at_pad(pred_one[:valid_len].tolist())
+    clean_list = trim_at_pad(clean_actions[0, :valid_len].cpu().tolist())
+    pred_list = trim_at_pad(pred[:valid_len].tolist())
 
     wall = batch["map"][0].numpy()
     start_cell = tuple(torch.nonzero(batch["map"][1], as_tuple=False)[0].tolist())
@@ -153,6 +158,7 @@ if __name__ == "__main__":
     p = argparse.ArgumentParser()
     p.add_argument("--ckpt", type=str, default="checkpoints/fm_denoiser.pt")
     p.add_argument("--steps", type=int, default=25)
+    p.add_argument("--max_seq_len", type=int, default=None)
     p.add_argument("--plot_out", type=str, default="artifacts/denoise_demo.png")
     args = p.parse_args()
     run(args)

@@ -6,7 +6,8 @@
 - `model.py`: map encoder + action embedding + time embedding + transformer 기반 velocity field 예측기
 - `train.py`: Flow Matching 학습 (`x_t=(1-t)x_0+t x_1`, target velocity `u_t=x_1-x_0`, MSE)
 - `eval.py`: Euler 적분으로 denoising, LM 스타일(softmax + multinomial sampling) action decoding, 시각화 저장
-  - 평가 시 입력 `noisy_actions`는 유효 길이 전체를 랜덤 액션(0~3)으로 채운 **완전 노이즈 시퀀스**를 사용
+  - 평가 시 모델은 **GridMap만 조건으로** `max_seq_len` 길이 내에서 action sequence를 생성
+  - 초기 입력은 길이 `max_seq_len`의 랜덤 액션 시퀀스(0~3)이며 denoising 후 PAD(-1) 이전까지만 최종 시퀀스로 사용
   - 적분 중 매 step마다 decode된 action 시퀀스를 콘솔에 출력
   - 시각화는 `['Noisy path', 'one step', f'{args.steps} step']` 3개 패널로 저장하며, Noisy path는 주황색으로 표시
 
@@ -14,7 +15,7 @@
 
 ```bash
 python train.py --n_samples 1500 --epochs 25 --out checkpoints/fm_denoiser.pt
-python eval.py --ckpt checkpoints/fm_denoiser.pt --steps 25 --plot_out artifacts/denoise_demo.png
+python eval.py --ckpt checkpoints/fm_denoiser.pt --steps 25 --max_seq_len 40 --plot_out artifacts/denoise_demo.png
 ```
 
 ## 필요 패키지
