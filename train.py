@@ -6,15 +6,21 @@ from pathlib import Path
 import torch
 from torch.utils.data import DataLoader
 
-from data_utils import GridDenoiseDataset
-from model import FlowMatchingTransformer
+from data_utils import PAD_ACTION, GridDenoiseDataset
+from model import PAD_TOKEN_ID, FlowMatchingTransformer
 
 
-def fm_loss(model, batch, device):
+def _tokenize_for_print(tokens: torch.Tensor) -> list[int]:
+    arr = tokens.detach().cpu().tolist()
+    return [PAD_ACTION if t == PAD_TOKEN_ID else int(t) for t in arr]
+
+
+def fm_loss(model, batch, device, return_debug: bool = False):
     map_tensor = batch["map"].to(device)
     noisy = batch["noisy_actions"].to(device)
     clean = batch["clean_actions"].to(device)
-    mask = batch["mask"].to(device)
+    # Train on full max_seq_len positions to enforce fixed-length behavior.
+    mask = torch.ones_like(batch["mask"], device=device)
 
     x0 = model.embed_actions(noisy)
     x1 = model.embed_actions(clean)
@@ -26,7 +32,21 @@ def fm_loss(model, batch, device):
     pred_v = model(xt, t, map_tensor, mask)
     mse = (pred_v - u_t).pow(2).mean(dim=-1)
     loss = (mse * mask).sum() / (mask.sum() + 1e-6)
-    return loss
+    if not return_debug:
+        return loss
+
+    pred_next = x0 + pred_v
+    pred_logits = model.action_logits_from_embeddings(pred_next[0])
+    pred_tokens = pred_logits.argmax(dim=-1)
+    debug = {
+        "noisy": noisy[0].detach().cpu(),
+        "clean": clean[0].detach().cpu(),
+        "pred_tokens": pred_tokens.detach().cpu(),
+        "t0": float(t[0].item()),
+        "mse_head": mse[0, :10].detach().cpu(),
+        "loss": float(loss.item()),
+    }
+    return loss, debug
 
 
 def train(args):
@@ -42,10 +62,22 @@ def train(args):
         running = 0.0
         for batch in loader:
             opt.zero_grad(set_to_none=True)
-            loss = fm_loss(model, batch, device)
+            need_debug = epoch == 1 and running == 0.0
+            if need_debug:
+                loss, dbg = fm_loss(model, batch, device, return_debug=True)
+            else:
+                loss = fm_loss(model, batch, device)
             loss.backward()
             opt.step()
             running += loss.item()
+
+            if need_debug:
+                print("[Debug:first-step] t:", round(dbg["t0"], 4))
+                print("[Debug:first-step] noisy[0]:", dbg["noisy"].tolist())
+                print("[Debug:first-step] clean[0]:", dbg["clean"].tolist())
+                print("[Debug:first-step] pred_token(argmax, x0+v)[0]:", _tokenize_for_print(dbg["pred_tokens"]))
+                print("[Debug:first-step] token_mse_head(first 10):", dbg["mse_head"].tolist())
+                print("[Debug:first-step] loss:", round(dbg["loss"], 6))
 
         avg = running / max(len(loader), 1)
         print(f"Epoch {epoch}/{args.epochs} - loss: {avg:.4f}")

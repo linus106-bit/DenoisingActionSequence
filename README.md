@@ -5,6 +5,8 @@
 - `data_utils.py`: 10x10 grid 생성, shortest path 기반 clean action 생성, noisy action 합성, `Dataset` 제공
 - `model.py`: map encoder + action embedding + time embedding + transformer 기반 velocity field 예측기
 - `train.py`: Flow Matching 학습 (`x_t=(1-t)x_0+t x_1`, target velocity `u_t=x_1-x_0`, MSE)
+  - 학습은 `max_seq_len` 전체 포지션에 대해 loss를 계산해 고정 길이 시퀀스 동작을 유지
+  - 첫 번째 학습 step에서 예시 `noisy/clean/pred token`, `t`, token별 MSE 일부, 최종 loss를 디버그 출력
 - `eval.py`: Euler 적분으로 denoising, LM 스타일(softmax + multinomial sampling) action decoding, 시각화 저장
   - 평가 시 모델은 **GridMap만 조건으로** `max_seq_len` 길이 내에서 action sequence를 생성
   - 초기 입력은 길이 `max_seq_len`의 랜덤 액션 시퀀스(0~3)이며 denoising 후 PAD(-1) 이전까지만 최종 시퀀스로 사용
@@ -32,3 +34,8 @@ python eval.py --ckpt checkpoints/fm_denoiser.pt --steps 25 --max_seq_len 40 --p
 - 모델 내부에서는 `-1`을 PAD 토큰 id(`4`)로 매핑해 임베딩합니다.
 - 디코딩 시에도 PAD 토큰(4)을 후보에 포함하며, 샘플링 결과가 4이면 다시 `-1`로 변환합니다.
 - 경로 rollout/시각화에서는 `-1`이 나오면 해당 시점에서 경로 전개를 종료합니다.
+
+## 데이터 생성 규칙
+
+- `clean_actions`(최단경로)가 `max_seq_len`보다 길면 해당 샘플은 버리고 다시 샘플링합니다.
+- 따라서 데이터셋 액션 텐서는 항상 길이 `max_seq_len`이며, 목표 경로 이후 구간은 PAD(`-1`)로 채워집니다.

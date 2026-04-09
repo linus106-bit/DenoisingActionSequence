@@ -95,7 +95,10 @@ def sample_grid_with_path(
         if len(path) - 1 < min_path_len:
             continue
 
-        clean = _path_to_actions(path)[:max_seq_len]
+        clean = _path_to_actions(path)
+        # Keep full shortest path; reject samples that exceed max_seq_len
+        if len(clean) > max_seq_len:
+            continue
         noisy = _add_noise(clean, max_len=max_seq_len)
         return GridSample(grid=grid, start=start, goal=goal, clean_actions=clean, noisy_actions=noisy)
 
