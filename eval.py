@@ -23,6 +23,9 @@ def rollout(start: Tuple[int, int], actions: List[int], grid):
     traj = [pos]
     h, w = grid.shape
     for a in actions:
+        # PAD(-1) is not a real action. Stop rollout when PAD begins.
+        if a == -1:
+            break
         dr, dc = ACTIONS[a]
         nr, nc = pos[0] + dr, pos[1] + dc
         if 0 <= nr < h and 0 <= nc < w and grid[nr, nc] == 0:
