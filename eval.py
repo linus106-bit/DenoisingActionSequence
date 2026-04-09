@@ -34,17 +34,28 @@ def rollout(start: Tuple[int, int], actions: List[int], grid):
     return traj
 
 
-def plot_paths(grid, start, goal, noisy_actions, pred_actions, clean_actions, out_path: Path):
-    fig, axes = plt.subplots(1, 2, figsize=(10, 5))
-    titles = ["Noisy path", "Denoised path"]
-    seqs = [noisy_actions, pred_actions]
+def plot_paths(
+    grid,
+    start,
+    goal,
+    noisy_actions,
+    one_step_actions,
+    multi_step_actions,
+    clean_actions,
+    out_path: Path,
+    multi_step_label: str,
+):
+    fig, axes = plt.subplots(1, 3, figsize=(15, 5))
+    titles = ["Noisy path", "one step", multi_step_label]
+    seqs = [noisy_actions, one_step_actions, multi_step_actions]
 
-    for ax, title, seq in zip(axes, titles, seqs):
+    for idx, (ax, title, seq) in enumerate(zip(axes, titles, seqs)):
         ax.imshow(grid, cmap="gray_r")
         traj = rollout(start, seq, grid)
         ys = [p[0] for p in traj]
         xs = [p[1] for p in traj]
-        ax.plot(xs, ys, marker="o", linewidth=2)
+        line_color = "orange" if idx == 0 else None
+        ax.plot(xs, ys, marker="o", linewidth=2, color=line_color)
         ax.scatter(start[1], start[0], c="lime", s=80, label="start")
         ax.scatter(goal[1], goal[0], c="red", s=80, label="goal")
         ax.set_title(title)
@@ -53,8 +64,8 @@ def plot_paths(grid, start, goal, noisy_actions, pred_actions, clean_actions, ou
         ax.grid(True, alpha=0.3)
 
     clean_traj = rollout(start, clean_actions, grid)
-    axes[1].plot([p[1] for p in clean_traj], [p[0] for p in clean_traj], "--", color="gold", label="clean gt")
-    axes[1].legend(loc="upper right")
+    axes[2].plot([p[1] for p in clean_traj], [p[0] for p in clean_traj], "--", color="gold", label="clean gt")
+    axes[2].legend(loc="upper right")
 
     fig.tight_layout()
     out_path.parent.mkdir(parents=True, exist_ok=True)
@@ -86,7 +97,16 @@ def run(args):
     noisy_actions = torch.where(valid_mask, random_actions, noisy_actions)
 
     with torch.no_grad():
-        x = model.embed_actions(noisy_actions)
+        x0 = model.embed_actions(noisy_actions)
+
+        # One-step denoising
+        t0 = torch.zeros((1,), device=device)
+        one_step_v = model(x0, t0, map_tensor, mask)
+        x_one = x0 + one_step_v
+        pred_one = decode_actions_from_embeddings(model, x_one.squeeze(0)).cpu()
+
+        # Multi-step denoising
+        x = x0.clone()
         steps = args.steps
         dt = 1.0 / steps
         valid_len = int(mask.sum().item())
@@ -100,6 +120,7 @@ def run(args):
         pred = decode_actions_from_embeddings(model, x.squeeze(0)).cpu()
 
     noisy_list = noisy_actions[0, :valid_len].cpu().tolist()
+    one_step_list = pred_one[:valid_len].tolist()
     clean_list = clean_actions[0, :valid_len].cpu().tolist()
     pred_list = pred[:valid_len].tolist()
 
@@ -108,9 +129,20 @@ def run(args):
     goal_cell = tuple(torch.nonzero(batch["map"][2], as_tuple=False)[0].tolist())
 
     out = Path(args.plot_out)
-    plot_paths(wall, start_cell, goal_cell, noisy_list, pred_list, clean_list, out)
+    plot_paths(
+        wall,
+        start_cell,
+        goal_cell,
+        noisy_list,
+        one_step_list,
+        pred_list,
+        clean_list,
+        out,
+        multi_step_label=f"{args.steps} step",
+    )
     print(f"Saved visualization to: {out}")
     print("Noisy:", noisy_list)
+    print("OneStep:", one_step_list)
     print("Pred :", pred_list)
     print("Clean:", clean_list)
 

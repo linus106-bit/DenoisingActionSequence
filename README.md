@@ -8,6 +8,7 @@
 - `eval.py`: Euler 적분으로 denoising, LM 스타일(softmax + multinomial sampling) action decoding, 시각화 저장
   - 평가 시 입력 `noisy_actions`는 유효 길이 전체를 랜덤 액션(0~3)으로 채운 **완전 노이즈 시퀀스**를 사용
   - 적분 중 매 step마다 decode된 action 시퀀스를 콘솔에 출력
+  - 시각화는 `['Noisy path', 'one step', f'{args.steps} step']` 3개 패널로 저장하며, Noisy path는 주황색으로 표시
 
 ## 실행 예시
 
