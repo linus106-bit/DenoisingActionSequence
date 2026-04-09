@@ -7,7 +7,7 @@ from typing import List, Tuple
 import matplotlib.pyplot as plt
 import torch
 
-from data_utils import ACTIONS, GridDenoiseDataset
+from data_utils import ACTIONS, GridDenoiseDataset, PAD_ACTION
 from model import FlowMatchingTransformer
 
 
@@ -76,9 +76,14 @@ def run(args):
     batch = ds[0]
 
     map_tensor = batch["map"].unsqueeze(0).to(device)
-    noisy_actions = batch["noisy_actions"].unsqueeze(0).to(device)
     clean_actions = batch["clean_actions"].unsqueeze(0).to(device)
     mask = batch["mask"].unsqueeze(0).to(device)
+    valid_mask = mask > 0.5
+
+    # Eval setting: use fully noisy actions (all valid steps are random 0~3)
+    noisy_actions = torch.full_like(clean_actions, fill_value=PAD_ACTION)
+    random_actions = torch.randint(0, 4, size=clean_actions.shape, device=device)
+    noisy_actions = torch.where(valid_mask, random_actions, noisy_actions)
 
     with torch.no_grad():
         x = model.embed_actions(noisy_actions)
