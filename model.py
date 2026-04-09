@@ -50,7 +50,7 @@ class FlowMatchingTransformer(nn.Module):
         super().__init__()
         self.embed_dim = embed_dim
         # action tokens: 0..3 + PAD(4)
-        self.action_embed = nn.Embedding(max_actions, embed_dim, padding_idx=PAD_TOKEN_ID)
+        self.action_embed = nn.Embedding(max_actions, embed_dim)
         self.map_encoder = MapEncoder(out_dim=embed_dim)
         self.time_embed = nn.Sequential(
             SinusoidalTimeEmbedding(embed_dim),
@@ -75,11 +75,11 @@ class FlowMatchingTransformer(nn.Module):
 
     def action_logits_from_embeddings(self, seq_emb: torch.Tensor) -> torch.Tensor:
         """
-        Convert sequence embeddings to action logits (0~3) using
+        Convert sequence embeddings to action logits (0~4, PAD 포함) using
         the action embedding table as a tied output projection.
         """
-        action_table = self.action_embed.weight[:4]  # (4, D)
-        return seq_emb @ action_table.transpose(0, 1)  # (B, L, 4) or (L, 4)
+        action_table = self.action_embed.weight  # (5, D): 0~3 + PAD(4)
+        return seq_emb @ action_table.transpose(0, 1)  # (B, L, 5) or (L, 5)
 
     def forward(self, x_t: torch.Tensor, t: torch.Tensor, map_tensor: torch.Tensor, mask: torch.Tensor | None = None) -> torch.Tensor:
         # x_t: (B, L, D), t: (B,), map_tensor: (B,3,10,10)

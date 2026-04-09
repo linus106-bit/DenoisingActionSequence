@@ -8,14 +8,16 @@ import matplotlib.pyplot as plt
 import torch
 
 from data_utils import ACTIONS, GridDenoiseDataset, PAD_ACTION
-from model import FlowMatchingTransformer
+from model import PAD_TOKEN_ID, FlowMatchingTransformer
 
 
 def decode_actions_from_embeddings(model: FlowMatchingTransformer, seq_emb: torch.Tensor) -> torch.Tensor:
-    # seq_emb: (L, D) -> logits: (L, 4) -> softmax -> multinomial sampling
+    # seq_emb: (L, D) -> logits: (L, 5; PAD 포함) -> softmax -> multinomial sampling
     logits = model.action_logits_from_embeddings(seq_emb)
     probs = torch.softmax(logits, dim=-1)
-    return torch.multinomial(probs, num_samples=1).squeeze(-1)
+    token_ids = torch.multinomial(probs, num_samples=1).squeeze(-1)
+    # Convert PAD token id(4) back to PAD action value(-1)
+    return torch.where(token_ids == PAD_TOKEN_ID, torch.full_like(token_ids, PAD_ACTION), token_ids)
 
 
 def rollout(start: Tuple[int, int], actions: List[int], grid):
