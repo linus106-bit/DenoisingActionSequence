@@ -259,7 +259,12 @@ def run(args):
     model.eval()
 
     max_seq_len = args.max_seq_len if args.max_seq_len is not None else cfg["max_seq_len"]
-    ds = GridDenoiseDataset(n_samples=args.num_eval_samples, max_seq_len=max_seq_len)
+    grid_size = args.grid_size if args.grid_size is not None else cfg.get("grid_size", 10)
+    ds = GridDenoiseDataset(
+        n_samples=args.num_eval_samples,
+        max_seq_len=max_seq_len,
+        grid_size=grid_size,
+    )
 
     plot_dir = Path(args.plot_dir)
     plot_dir.mkdir(parents=True, exist_ok=True)
@@ -309,6 +314,7 @@ def run(args):
         "steps": args.steps,
         "seed": args.seed,
         "num_eval_samples": args.num_eval_samples,
+        "grid_size": grid_size,
         "aggregate_pred_metrics": aggregate_numeric_metrics(sample_results),
         "samples": sample_results,
     }
@@ -326,6 +332,7 @@ if __name__ == "__main__":
     p = argparse.ArgumentParser()
     p.add_argument("--ckpt", type=str, default="checkpoints/fm_denoiser.pt")
     p.add_argument("--steps", type=int, default=25)
+    p.add_argument("--grid_size", type=int, default=None)
     p.add_argument("--max_seq_len", type=int, default=None)
     p.add_argument("--num_eval_samples", type=int, default=10)
     p.add_argument("--plot_dir", type=str, default="artifacts/eval_plots")
