@@ -9,17 +9,17 @@ import numpy as np
 import torch
 from torch.utils.data import Dataset
 
-# Actions: 0=Up, 1=Down, 2=Left, 3=Right, 4=EOS, 5=PAD
-EOS_ACTION = 4
-PAD_ACTION = 5
-NUM_TOKENS = 6
+# Token ids: 0 unused, 1=Up, 2=Down, 3=Left, 4=Right, 5=EOS, 6=PAD
+EOS_ACTION = 5
+PAD_ACTION = 6
+NUM_TOKENS = 7
 ACTIONS = {
-    0: (-1, 0),
-    1: (1, 0),
-    2: (0, -1),
-    3: (0, 1),
+    1: (-1, 0),
+    2: (1, 0),
+    3: (0, -1),
+    4: (0, 1),
 }
-OPPOSITE = {0: 1, 1: 0, 2: 3, 3: 2}
+OPPOSITE = {1: 2, 2: 1, 3: 4, 4: 3}
 
 
 @dataclass
@@ -58,10 +58,10 @@ def _add_noise(clean_actions: Sequence[int], max_len: int, replace_p: float = 0.
     noisy: List[int] = []
     for a in clean_actions:
         if random.random() < replace_p:
-            a = random.randint(0, 3)
+            a = random.randint(1, 4)
         noisy.append(a)
         if random.random() < insert_p and len(noisy) + 2 <= max_len:
-            b = random.randint(0, 3)
+            b = random.randint(1, 4)
             noisy.extend([b, OPPOSITE[b]])
     return noisy[:max_len]
 

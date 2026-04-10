@@ -23,7 +23,7 @@ def _make_t_scaled_noisy(
     """
     Build x0 tokens from clean actions.
     - Valid positions: replace exactly floor(valid_len * (1 - t)) positions with
-      a different token in {0,1,2,3,EOS}.
+      a different token in {1,2,3,4,EOS}.
     This keeps the FM convention aligned with evaluation:
     t=0 is most noisy, t=1 is clean.
     PAD positions stay as PAD and are excluded from loss, while EOS is supervised.
@@ -42,9 +42,9 @@ def _make_t_scaled_noisy(
             perm = torch.randperm(valid_len, device=clean.device)
             chosen = valid_idx[perm[:n_replace]]
             original = clean[i, chosen]
-            # Ensure replacement token differs from the original token (0~3 or EOS).
-            delta = torch.randint(1, EOS_ACTION + 1, size=original.shape, device=clean.device)
-            noisy[i, chosen] = (original + delta) % (EOS_ACTION + 1)
+            # Ensure replacement token differs from the original token (1~4 or EOS).
+            delta = torch.randint(1, EOS_ACTION, size=original.shape, device=clean.device)
+            noisy[i, chosen] = ((original - 1 + delta) % EOS_ACTION) + 1
     return noisy
 
 

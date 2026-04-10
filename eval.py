@@ -16,8 +16,9 @@ from model import FlowMatchingTransformer
 def decode_actions_from_embeddings(
     model: FlowMatchingTransformer, seq_emb: torch.Tensor, mode: str = "argmax"
 ) -> torch.Tensor:
-    # seq_emb: (L, D) -> logits: (L, 6; includes EOS=4 and PAD=5)
+    # seq_emb: (L, D) -> logits: (L, 7; token 0 is unused, EOS=5, PAD=6)
     logits = model.action_logits_from_embeddings(seq_emb)
+    logits[..., 0] = float("-inf")
     if mode == "sample":
         probs = torch.softmax(logits, dim=-1)
         return torch.multinomial(probs, num_samples=1).squeeze(-1)
