@@ -92,7 +92,8 @@ def run(args):
     model.eval()
 
     max_seq_len = args.max_seq_len if args.max_seq_len is not None else cfg["max_seq_len"]
-    ds = GridDenoiseDataset(n_samples=1, max_seq_len=max_seq_len)
+    grid_size = cfg.get("grid_size", args.grid_size)
+    ds = GridDenoiseDataset(n_samples=1, max_seq_len=max_seq_len, grid_size=grid_size)
     batch = ds[0]
 
     map_tensor = batch["map"].unsqueeze(0).to(device)
@@ -159,6 +160,7 @@ if __name__ == "__main__":
     p.add_argument("--ckpt", type=str, default="checkpoints/fm_denoiser.pt")
     p.add_argument("--steps", type=int, default=25)
     p.add_argument("--max_seq_len", type=int, default=None)
+    p.add_argument("--grid_size", type=int, default=8)
     p.add_argument("--plot_out", type=str, default="artifacts/denoise_demo.png")
     args = p.parse_args()
     run(args)

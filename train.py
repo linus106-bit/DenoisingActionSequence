@@ -15,17 +15,17 @@ def _tokenize_for_print(tokens: torch.Tensor) -> list[int]:
     return [PAD_ACTION if t == PAD_TOKEN_ID else int(t) for t in arr]
 
 
-def _make_t_scaled_noisy(clean: torch.Tensor, valid_mask: torch.Tensor, t: torch.Tensor) -> torch.Tensor:
-    """
-    Build x0 tokens from clean actions by replacing exactly floor(len(actions) * t)
-    valid positions with random actions per sample.
+def _make_noisy(clean: torch.Tensor, valid_mask: torch.Tensor, noise_ratio: float) -> torch.Tensor:
+    """Build x0 tokens from clean actions with a fixed corruption ratio.
+
+    This keeps x0 independent from sampled t in the flow-matching objective.
     """
     noisy = clean.clone()
     batch = clean.shape[0]
     for i in range(batch):
         valid_idx = torch.nonzero(valid_mask[i] > 0.5, as_tuple=False).squeeze(-1)
         valid_len = int(valid_idx.numel())
-        n_replace = int(valid_len * float(t[i].item()))
+        n_replace = int(valid_len * float(noise_ratio))
         if valid_len == 0 or n_replace <= 0:
             continue
 
@@ -38,7 +38,7 @@ def _make_t_scaled_noisy(clean: torch.Tensor, valid_mask: torch.Tensor, t: torch
     return noisy
 
 
-def fm_loss(model, batch, device, return_debug: bool = False):
+def fm_loss(model, batch, device, noise_ratio: float = 0.5, return_debug: bool = False):
     map_tensor = batch["map"].to(device)
     clean = batch["clean_actions"].to(device)
     valid_mask = batch["mask"].to(device)
@@ -46,7 +46,7 @@ def fm_loss(model, batch, device, return_debug: bool = False):
     mask = torch.ones_like(batch["mask"], device=device)
 
     t = torch.rand(clean.shape[0], device=device)
-    noisy = _make_t_scaled_noisy(clean, valid_mask, t)
+    noisy = _make_noisy(clean, valid_mask, noise_ratio=noise_ratio)
 
     x0 = model.embed_actions(noisy)
     x1 = model.embed_actions(clean)
@@ -76,11 +76,19 @@ def fm_loss(model, batch, device, return_debug: bool = False):
 
 def train(args):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    dataset = GridDenoiseDataset(n_samples=args.n_samples, max_seq_len=args.max_seq_len)
+    dataset = GridDenoiseDataset(
+        n_samples=args.n_samples,
+        max_seq_len=args.max_seq_len,
+        grid_size=args.grid_size,
+    )
     loader = DataLoader(dataset, batch_size=args.batch_size, shuffle=True)
 
     model = FlowMatchingTransformer(embed_dim=args.embed_dim, n_layers=args.layers, n_heads=args.heads).to(device)
     opt = torch.optim.Adam(model.parameters(), lr=args.lr)
+
+    noise_ratio = min(max(float(args.noise_ratio), 0.0), 1.0)
+    if noise_ratio != float(args.noise_ratio):
+        print(f"[Warn] noise_ratio clamped from {args.noise_ratio} to {noise_ratio}")
 
     for epoch in range(1, args.epochs + 1):
         model.train()
@@ -89,9 +97,9 @@ def train(args):
             opt.zero_grad(set_to_none=True)
             need_debug = epoch == 1 and running == 0.0
             if need_debug:
-                loss, dbg = fm_loss(model, batch, device, return_debug=True)
+                loss, dbg = fm_loss(model, batch, device, noise_ratio=noise_ratio, return_debug=True)
             else:
-                loss = fm_loss(model, batch, device)
+                loss = fm_loss(model, batch, device, noise_ratio=noise_ratio)
             loss.backward()
             opt.step()
             running += loss.item()
@@ -117,12 +125,14 @@ if __name__ == "__main__":
     p = argparse.ArgumentParser()
     p.add_argument("--n_samples", type=int, default=1500)
     p.add_argument("--max_seq_len", type=int, default=40)
+    p.add_argument("--grid_size", type=int, default=8)
     p.add_argument("--batch_size", type=int, default=64)
     p.add_argument("--epochs", type=int, default=25)
     p.add_argument("--embed_dim", type=int, default=64)
     p.add_argument("--layers", type=int, default=3)
     p.add_argument("--heads", type=int, default=4)
     p.add_argument("--lr", type=float, default=2e-3)
+    p.add_argument("--noise_ratio", type=float, default=0.5)
     p.add_argument("--out", type=str, default="checkpoints/fm_denoiser.pt")
     args = p.parse_args()
     train(args)

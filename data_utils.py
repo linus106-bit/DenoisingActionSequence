@@ -22,7 +22,7 @@ OPPOSITE = {0: 1, 1: 0, 2: 3, 3: 2}
 
 @dataclass
 class GridSample:
-    grid: np.ndarray  # (10, 10), 0 free / 1 wall
+    grid: np.ndarray  # (size, size), 0 free / 1 wall
     start: Tuple[int, int]
     goal: Tuple[int, int]
     clean_actions: List[int]

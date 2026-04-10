@@ -2,7 +2,7 @@
 
 `PROMPT.md` 요구사항을 반영해 다음 모듈을 구현했습니다.
 
-- `data_utils.py`: 10x10 grid 생성, shortest path 기반 clean action 생성, noisy action 합성, `Dataset` 제공
+- `data_utils.py`: configurable grid 생성(기본 8x8), shortest path 기반 clean action 생성, noisy action 합성, `Dataset` 제공
 - `model.py`: map encoder + action embedding + time embedding + transformer 기반 velocity field 예측기
 - `train.py`: Flow Matching 학습 (`x_t=(1-t)x_0+t x_1`, target velocity `u_t=x_1-x_0`, MSE)
   - 학습은 `max_seq_len` 전체 포지션에 대해 loss를 계산해 고정 길이 시퀀스 동작을 유지
@@ -16,8 +16,8 @@
 ## 실행 예시
 
 ```bash
-python train.py --n_samples 1500 --epochs 25 --out checkpoints/fm_denoiser.pt
-python eval.py --ckpt checkpoints/fm_denoiser.pt --steps 25 --max_seq_len 40 --plot_out artifacts/denoise_demo.png
+python train.py --n_samples 1500 --epochs 25 --grid_size 8 --out checkpoints/fm_denoiser.pt
+python eval.py --ckpt checkpoints/fm_denoiser.pt --steps 25 --max_seq_len 40 --grid_size 8 --plot_out artifacts/denoise_demo.png
 ```
 
 ## 필요 패키지
