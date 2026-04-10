@@ -5,8 +5,9 @@ import math
 import torch
 import torch.nn as nn
 
-PAD_ACTION_VALUE = 4
-PAD_TOKEN_ID = 4
+EOS_TOKEN_ID = 4
+PAD_ACTION_VALUE = 5
+PAD_TOKEN_ID = 5
 
 
 class SinusoidalTimeEmbedding(nn.Module):
@@ -46,10 +47,10 @@ class MapEncoder(nn.Module):
 
 
 class FlowMatchingTransformer(nn.Module):
-    def __init__(self, embed_dim: int = 64, n_heads: int = 4, n_layers: int = 3, ff_dim: int = 128, max_actions: int = 5):
+    def __init__(self, embed_dim: int = 64, n_heads: int = 4, n_layers: int = 3, ff_dim: int = 128, max_actions: int = 6):
         super().__init__()
         self.embed_dim = embed_dim
-        # action tokens: 0..3 + PAD(4)
+        # token ids: 0..3 real actions, 4=EOS, 5=PAD
         self.action_embed = nn.Embedding(max_actions, embed_dim)
         self.map_encoder = MapEncoder(out_dim=embed_dim)
         self.time_embed = nn.Sequential(
@@ -68,18 +69,18 @@ class FlowMatchingTransformer(nn.Module):
         self.out = nn.Linear(embed_dim, embed_dim)
 
     def embed_actions(self, actions: torch.Tensor) -> torch.Tensor:
-        # actions already use 0..3 + PAD(4)
+        # actions already use 0..3 + EOS(4) + PAD(5)
         if actions.dtype != torch.long:
             actions = actions.long()
         return self.action_embed(actions)
 
     def action_logits_from_embeddings(self, seq_emb: torch.Tensor) -> torch.Tensor:
         """
-        Convert sequence embeddings to action logits (0~4, PAD 포함) using
+        Convert sequence embeddings to token logits (0~5, EOS/PAD 포함) using
         the action embedding table as a tied output projection.
         """
-        action_table = self.action_embed.weight  # (5, D): 0~3 + PAD(4)
-        return seq_emb @ action_table.transpose(0, 1)  # (B, L, 5) or (L, 5)
+        action_table = self.action_embed.weight  # (6, D): 0~3 + EOS(4) + PAD(5)
+        return seq_emb @ action_table.transpose(0, 1)  # (B, L, 6) or (L, 6)
 
     def forward(self, x_t: torch.Tensor, t: torch.Tensor, map_tensor: torch.Tensor, mask: torch.Tensor | None = None) -> torch.Tensor:
         # x_t: (B, L, D), t: (B,), map_tensor: (B,3,10,10)

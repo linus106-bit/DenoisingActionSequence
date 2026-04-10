@@ -9,14 +9,14 @@ import matplotlib.pyplot as plt
 import numpy as np
 import torch
 
-from data_utils import ACTIONS, GridDenoiseDataset, PAD_ACTION
+from data_utils import ACTIONS, EOS_ACTION, GridDenoiseDataset, PAD_ACTION
 from model import FlowMatchingTransformer
 
 
 def decode_actions_from_embeddings(
     model: FlowMatchingTransformer, seq_emb: torch.Tensor, mode: str = "argmax"
 ) -> torch.Tensor:
-    # seq_emb: (L, D) -> logits: (L, 5; includes PAD=4)
+    # seq_emb: (L, D) -> logits: (L, 6; includes EOS=4 and PAD=5)
     logits = model.action_logits_from_embeddings(seq_emb)
     if mode == "sample":
         probs = torch.softmax(logits, dim=-1)
@@ -31,8 +31,8 @@ def rollout(start: Tuple[int, int], actions: List[int], grid):
     traj = [pos]
     h, w = grid.shape
     for a in actions:
-        # PAD(4) is not a real action. Stop rollout when PAD begins.
-        if a == PAD_ACTION:
+        # EOS/PAD are not real actions. Stop rollout when sequence terminates.
+        if a in (EOS_ACTION, PAD_ACTION):
             break
         dr, dc = ACTIONS[a]
         nr, nc = pos[0] + dr, pos[1] + dc
@@ -42,9 +42,10 @@ def rollout(start: Tuple[int, int], actions: List[int], grid):
     return traj
 
 
-def trim_at_pad(actions: List[int]) -> List[int]:
-    if PAD_ACTION in actions:
-        return actions[: actions.index(PAD_ACTION)]
+def trim_at_stop(actions: List[int]) -> List[int]:
+    stop_positions = [actions.index(token) for token in (EOS_ACTION, PAD_ACTION) if token in actions]
+    if stop_positions:
+        return actions[: min(stop_positions)]
     return actions
 
 
@@ -55,8 +56,8 @@ def sequence_metrics(pred_tokens: torch.Tensor, clean_tokens: torch.Tensor, clea
     valid_acc = float((pred_tokens[:clean_valid_len] == clean_tokens[:clean_valid_len]).float().mean().item())
     exact_match = float(torch.equal(pred_tokens, clean_tokens))
     valid_exact_match = float(torch.equal(pred_tokens[:clean_valid_len], clean_tokens[:clean_valid_len]))
-    pred_trimmed = trim_at_pad(pred_tokens.tolist())
-    clean_trimmed = trim_at_pad(clean_tokens.tolist())
+    pred_trimmed = trim_at_stop(pred_tokens.tolist())
+    clean_trimmed = trim_at_stop(clean_tokens.tolist())
     trimmed_exact_match = float(pred_trimmed == clean_trimmed)
     return {
         "full_token_acc": full_acc,
@@ -162,9 +163,8 @@ def run(args):
     valid_len = clean_actions.shape[1]
     clean_valid_len = int((clean_actions[0] != PAD_ACTION).sum().item())
 
-    # Keep the same full-length behavior used during training so PAD restoration
-    # is evaluated together with real action denoising.
-    mask = torch.ones((1, max_seq_len), device=device)
+    # The model is trained on action+EOS positions while ignoring PAD.
+    mask = (noisy_actions != PAD_ACTION).float()
 
     with torch.no_grad():
         x0 = model.embed_actions(noisy_actions)
@@ -188,10 +188,10 @@ def run(args):
 
         pred = decode_actions_from_embeddings(model, x.squeeze(0), mode=args.decode).cpu()
 
-    noisy_list = trim_at_pad(noisy_actions[0, :valid_len].cpu().tolist())
-    one_step_list = trim_at_pad(pred_one[:valid_len].tolist())
-    clean_list = trim_at_pad(clean_actions[0, :valid_len].cpu().tolist())
-    pred_list = trim_at_pad(pred[:valid_len].tolist())
+    noisy_list = trim_at_stop(noisy_actions[0, :valid_len].cpu().tolist())
+    one_step_list = trim_at_stop(pred_one[:valid_len].tolist())
+    clean_list = trim_at_stop(clean_actions[0, :valid_len].cpu().tolist())
+    pred_list = trim_at_stop(pred[:valid_len].tolist())
 
     wall = batch["map"][0].numpy()
     start_cell = tuple(torch.nonzero(batch["map"][1], as_tuple=False)[0].tolist())

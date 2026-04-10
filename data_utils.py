@@ -9,8 +9,10 @@ import numpy as np
 import torch
 from torch.utils.data import Dataset
 
-# Actions: 0=Up, 1=Down, 2=Left, 3=Right, 4=PAD
-PAD_ACTION = 4
+# Actions: 0=Up, 1=Down, 2=Left, 3=Right, 4=EOS, 5=PAD
+EOS_ACTION = 4
+PAD_ACTION = 5
+NUM_TOKENS = 6
 ACTIONS = {
     0: (-1, 0),
     1: (1, 0),
@@ -96,10 +98,10 @@ def sample_grid_with_path(
             continue
 
         clean = _path_to_actions(path)
-        # Keep full shortest path; reject samples that exceed max_seq_len
-        if len(clean) > max_seq_len:
+        # Reserve one slot for EOS. The remaining suffix is padded with PAD.
+        if len(clean) + 1 > max_seq_len:
             continue
-        noisy = _add_noise(clean, max_len=max_seq_len)
+        noisy = _add_noise(clean, max_len=max_seq_len - 1)
         return GridSample(grid=grid, start=start, goal=goal, clean_actions=clean, noisy_actions=noisy)
 
     raise RuntimeError("Failed to sample a valid grid/path pair")
@@ -118,9 +120,10 @@ class GridDenoiseDataset(Dataset):
     def _pad(self, actions: Sequence[int]) -> Tuple[np.ndarray, np.ndarray]:
         arr = np.full((self.max_seq_len,), fill_value=PAD_ACTION, dtype=np.int64)
         mask = np.zeros((self.max_seq_len,), dtype=np.float32)
-        L = min(len(actions), self.max_seq_len)
+        L = min(len(actions), self.max_seq_len - 1)
         arr[:L] = np.array(actions[:L], dtype=np.int64)
-        mask[:L] = 1.0
+        arr[L] = EOS_ACTION
+        mask[: L + 1] = 1.0
         return arr, mask
 
     def __getitem__(self, idx: int):
