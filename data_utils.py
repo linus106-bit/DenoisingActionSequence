@@ -9,15 +9,17 @@ import numpy as np
 import torch
 from torch.utils.data import Dataset
 
-# Actions: 0=Up, 1=Down, 2=Left, 3=Right, 4=PAD
-PAD_ACTION = 4
+# Token ids: 0 unused, 1=Up, 2=Down, 3=Left, 4=Right, 5=EOS, 6=PAD
+EOS_ACTION = 5
+PAD_ACTION = 6
+NUM_TOKENS = 7
 ACTIONS = {
-    0: (-1, 0),
-    1: (1, 0),
-    2: (0, -1),
-    3: (0, 1),
+    1: (-1, 0),
+    2: (1, 0),
+    3: (0, -1),
+    4: (0, 1),
 }
-OPPOSITE = {0: 1, 1: 0, 2: 3, 3: 2}
+OPPOSITE = {1: 2, 2: 1, 3: 4, 4: 3}
 
 
 @dataclass
@@ -52,14 +54,14 @@ def _path_to_actions(path: Sequence[Tuple[int, int]]) -> List[int]:
     return actions
 
 
-def _add_noise(clean_actions: Sequence[int], max_len: int, replace_p: float = 0.25, insert_p: float = 0.2) -> List[int]:
+def _add_noise(clean_actions: Sequence[int], max_len: int, replace_p: float = 1.0, insert_p: float = 0.0) -> List[int]:
     noisy: List[int] = []
     for a in clean_actions:
         if random.random() < replace_p:
-            a = random.randint(0, 3)
+            a = random.randint(1, 4)
         noisy.append(a)
         if random.random() < insert_p and len(noisy) + 2 <= max_len:
-            b = random.randint(0, 3)
+            b = random.randint(1, 4)
             noisy.extend([b, OPPOSITE[b]])
     return noisy[:max_len]
 
@@ -96,10 +98,10 @@ def sample_grid_with_path(
             continue
 
         clean = _path_to_actions(path)
-        # Keep full shortest path; reject samples that exceed max_seq_len
-        if len(clean) > max_seq_len:
+        # Reserve one slot for EOS. The remaining suffix is padded with PAD.
+        if len(clean) + 1 > max_seq_len:
             continue
-        noisy = _add_noise(clean, max_len=max_seq_len)
+        noisy = _add_noise(clean, max_len=max_seq_len - 1)
         return GridSample(grid=grid, start=start, goal=goal, clean_actions=clean, noisy_actions=noisy)
 
     raise RuntimeError("Failed to sample a valid grid/path pair")
@@ -118,9 +120,10 @@ class GridDenoiseDataset(Dataset):
     def _pad(self, actions: Sequence[int]) -> Tuple[np.ndarray, np.ndarray]:
         arr = np.full((self.max_seq_len,), fill_value=PAD_ACTION, dtype=np.int64)
         mask = np.zeros((self.max_seq_len,), dtype=np.float32)
-        L = min(len(actions), self.max_seq_len)
+        L = min(len(actions), self.max_seq_len - 1)
         arr[:L] = np.array(actions[:L], dtype=np.int64)
-        mask[:L] = 1.0
+        arr[L] = EOS_ACTION
+        mask[: L + 1] = 1.0
         return arr, mask
 
     def __getitem__(self, idx: int):
