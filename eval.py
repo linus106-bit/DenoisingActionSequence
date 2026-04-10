@@ -1,21 +1,29 @@
 from __future__ import annotations
 
 import argparse
+import random
 from pathlib import Path
 from typing import List, Tuple
 
 import matplotlib.pyplot as plt
+import numpy as np
 import torch
 
 from data_utils import ACTIONS, GridDenoiseDataset, PAD_ACTION
 from model import FlowMatchingTransformer
 
 
-def decode_actions_from_embeddings(model: FlowMatchingTransformer, seq_emb: torch.Tensor) -> torch.Tensor:
-    # seq_emb: (L, D) -> logits: (L, 5; includes PAD=4) -> softmax -> multinomial sampling
+def decode_actions_from_embeddings(
+    model: FlowMatchingTransformer, seq_emb: torch.Tensor, mode: str = "argmax"
+) -> torch.Tensor:
+    # seq_emb: (L, D) -> logits: (L, 5; includes PAD=4)
     logits = model.action_logits_from_embeddings(seq_emb)
-    probs = torch.softmax(logits, dim=-1)
-    return torch.multinomial(probs, num_samples=1).squeeze(-1)
+    if mode == "sample":
+        probs = torch.softmax(logits, dim=-1)
+        return torch.multinomial(probs, num_samples=1).squeeze(-1)
+    if mode == "argmax":
+        return logits.argmax(dim=-1)
+    raise ValueError(f"Unsupported decode mode: {mode}")
 
 
 def rollout(start: Tuple[int, int], actions: List[int], grid):
@@ -38,6 +46,49 @@ def trim_at_pad(actions: List[int]) -> List[int]:
     if PAD_ACTION in actions:
         return actions[: actions.index(PAD_ACTION)]
     return actions
+
+
+def sequence_metrics(pred_tokens: torch.Tensor, clean_tokens: torch.Tensor, clean_valid_len: int) -> dict[str, float]:
+    pred_tokens = pred_tokens.cpu()
+    clean_tokens = clean_tokens.cpu()
+    full_acc = float((pred_tokens == clean_tokens).float().mean().item())
+    valid_acc = float((pred_tokens[:clean_valid_len] == clean_tokens[:clean_valid_len]).float().mean().item())
+    exact_match = float(torch.equal(pred_tokens, clean_tokens))
+    valid_exact_match = float(torch.equal(pred_tokens[:clean_valid_len], clean_tokens[:clean_valid_len]))
+    pred_trimmed = trim_at_pad(pred_tokens.tolist())
+    clean_trimmed = trim_at_pad(clean_tokens.tolist())
+    trimmed_exact_match = float(pred_trimmed == clean_trimmed)
+    return {
+        "full_token_acc": full_acc,
+        "valid_token_acc": valid_acc,
+        "exact_match_full": exact_match,
+        "exact_match_valid": valid_exact_match,
+        "trimmed_exact_match": trimmed_exact_match,
+        "pred_len": float(len(pred_trimmed)),
+        "clean_len": float(len(clean_trimmed)),
+    }
+
+
+def trajectory_metrics(
+    grid, start: Tuple[int, int], goal: Tuple[int, int], actions: List[int]
+) -> dict[str, float | int | bool | Tuple[int, int]]:
+    traj = rollout(start, actions, grid)
+    final_pos = traj[-1]
+    return {
+        "goal_reached": final_pos == goal,
+        "final_pos": final_pos,
+        "traj_len": len(traj) - 1,
+    }
+
+
+def print_metrics(tag: str, metrics: dict[str, float | int | bool | Tuple[int, int]]) -> None:
+    parts = []
+    for key, value in metrics.items():
+        if isinstance(value, float):
+            parts.append(f"{key}={value:.4f}")
+        else:
+            parts.append(f"{key}={value}")
+    print(f"[{tag}] " + ", ".join(parts))
 
 
 def plot_paths(
@@ -79,7 +130,19 @@ def plot_paths(
     plt.close(fig)
 
 
+def set_seed(seed: int) -> None:
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(seed)
+
+
 def run(args):
+    if args.steps <= 0:
+        raise ValueError("--steps must be a positive integer")
+
+    set_seed(args.seed)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     ckpt = torch.load(args.ckpt, map_location=device)
     cfg = ckpt["cfg"]
@@ -95,11 +158,13 @@ def run(args):
 
     map_tensor = batch["map"].unsqueeze(0).to(device)
     clean_actions = batch["clean_actions"].unsqueeze(0).to(device)
-    # Generation mode: model should produce a sequence within max_seq_len from map only.
-    # So we use full-length mask and random initial actions for the entire sequence.
-    mask = torch.ones((1, max_seq_len), device=device)
+    noisy_actions = batch["noisy_actions"].unsqueeze(0).to(device)
+    valid_len = clean_actions.shape[1]
+    clean_valid_len = int((clean_actions[0] != PAD_ACTION).sum().item())
 
-    noisy_actions = torch.randint(0, 5, size=(1, max_seq_len), device=device)
+    # Keep the same full-length behavior used during training so PAD restoration
+    # is evaluated together with real action denoising.
+    mask = torch.ones((1, max_seq_len), device=device)
 
     with torch.no_grad():
         x0 = model.embed_actions(noisy_actions)
@@ -108,21 +173,20 @@ def run(args):
         t0 = torch.zeros((1,), device=device)
         one_step_v = model(x0, t0, map_tensor, mask)
         x_one = x0 + one_step_v
-        pred_one = decode_actions_from_embeddings(model, x_one.squeeze(0)).cpu()
+        pred_one = decode_actions_from_embeddings(model, x_one.squeeze(0), mode=args.decode).cpu()
 
         # Multi-step denoising
         x = x0.clone()
         steps = args.steps
         dt = 1.0 / steps
-        valid_len = max_seq_len
         for i in range(steps):
             t = torch.full((1,), i / steps, device=device)
             v = model(x, t, map_tensor, mask)
             x = x + dt * v
-            step_pred = decode_actions_from_embeddings(model, x.squeeze(0)).cpu()[:valid_len].tolist()
+            step_pred = decode_actions_from_embeddings(model, x.squeeze(0), mode=args.decode).cpu()[:valid_len].tolist()
             print(f"[step {i + 1:02d}/{steps}] decoded actions: {step_pred}")
 
-        pred = decode_actions_from_embeddings(model, x.squeeze(0)).cpu()
+        pred = decode_actions_from_embeddings(model, x.squeeze(0), mode=args.decode).cpu()
 
     noisy_list = trim_at_pad(noisy_actions[0, :valid_len].cpu().tolist())
     one_step_list = trim_at_pad(pred_one[:valid_len].tolist())
@@ -145,11 +209,26 @@ def run(args):
         out,
         multi_step_label=f"{args.steps} step",
     )
+
+    noisy_seq_metrics = sequence_metrics(noisy_actions[0, :valid_len].cpu(), clean_actions[0, :valid_len].cpu(), clean_valid_len)
+    one_step_seq_metrics = sequence_metrics(pred_one[:valid_len], clean_actions[0, :valid_len].cpu(), clean_valid_len)
+    pred_seq_metrics = sequence_metrics(pred[:valid_len], clean_actions[0, :valid_len].cpu(), clean_valid_len)
+    noisy_traj_metrics = trajectory_metrics(wall, start_cell, goal_cell, noisy_list)
+    one_step_traj_metrics = trajectory_metrics(wall, start_cell, goal_cell, one_step_list)
+    pred_traj_metrics = trajectory_metrics(wall, start_cell, goal_cell, pred_list)
+
     print(f"Saved visualization to: {out}")
+    print(f"Decode mode: {args.decode}")
     print("Noisy:", noisy_list)
     print("OneStep:", one_step_list)
     print("Pred :", pred_list)
     print("Clean:", clean_list)
+    print_metrics("NoisySequence", noisy_seq_metrics)
+    print_metrics("OneStepSequence", one_step_seq_metrics)
+    print_metrics("PredSequence", pred_seq_metrics)
+    print_metrics("NoisyTrajectory", noisy_traj_metrics)
+    print_metrics("OneStepTrajectory", one_step_traj_metrics)
+    print_metrics("PredTrajectory", pred_traj_metrics)
 
 
 if __name__ == "__main__":
@@ -158,5 +237,7 @@ if __name__ == "__main__":
     p.add_argument("--steps", type=int, default=25)
     p.add_argument("--max_seq_len", type=int, default=None)
     p.add_argument("--plot_out", type=str, default="artifacts/denoise_demo.png")
+    p.add_argument("--decode", type=str, choices=["argmax", "sample"], default="argmax")
+    p.add_argument("--seed", type=int, default=0)
     args = p.parse_args()
     run(args)
