@@ -28,6 +28,24 @@ class SinusoidalTimeEmbedding(nn.Module):
         return emb
 
 
+class SinusoidalPositionEmbedding(nn.Module):
+    def __init__(self, dim: int):
+        super().__init__()
+        self.dim = dim
+
+    def forward(self, length: int, device: torch.device, dtype: torch.dtype) -> torch.Tensor:
+        positions = torch.arange(length, device=device, dtype=dtype)
+        half = self.dim // 2
+        freq = torch.exp(
+            torch.arange(half, device=device, dtype=dtype) * (-math.log(10000.0) / max(half - 1, 1))
+        )
+        args = positions[:, None] * freq[None, :]
+        emb = torch.cat([torch.sin(args), torch.cos(args)], dim=-1)
+        if emb.shape[-1] < self.dim:
+            emb = torch.cat([emb, torch.zeros_like(emb[:, :1])], dim=-1)
+        return emb
+
+
 class MapEncoder(nn.Module):
     def __init__(self, out_dim: int):
         super().__init__()
@@ -53,6 +71,7 @@ class FlowMatchingTransformer(nn.Module):
         # token ids: 0 unused, 1..4 real actions, 5=EOS, 6=PAD
         self.action_embed = nn.Embedding(max_actions, embed_dim)
         self.map_encoder = MapEncoder(out_dim=embed_dim)
+        self.pos_embed = SinusoidalPositionEmbedding(embed_dim)
         self.time_embed = nn.Sequential(
             SinusoidalTimeEmbedding(embed_dim),
             nn.Linear(embed_dim, embed_dim),
@@ -85,10 +104,11 @@ class FlowMatchingTransformer(nn.Module):
     def forward(self, x_t: torch.Tensor, t: torch.Tensor, map_tensor: torch.Tensor, mask: torch.Tensor | None = None) -> torch.Tensor:
         # x_t: (B, L, D), t: (B,), map_tensor: (B,3,10,10)
         B, L, _ = x_t.shape
+        pos_emb = self.pos_embed(L, x_t.device, x_t.dtype).unsqueeze(0).expand(B, L, -1)
         t_emb = self.time_embed(t).unsqueeze(1).expand(B, L, -1)
         m_emb = self.map_encoder(map_tensor).unsqueeze(1).expand(B, L, -1)
 
-        h = x_t + t_emb + m_emb
+        h = x_t + pos_emb + t_emb + m_emb
         key_padding_mask = None
         if mask is not None:
             key_padding_mask = mask < 0.5
