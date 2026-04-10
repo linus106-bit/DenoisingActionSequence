@@ -238,7 +238,7 @@ if __name__ == "__main__":
     p.add_argument("--steps", type=int, default=25)
     p.add_argument("--max_seq_len", type=int, default=None)
     p.add_argument("--plot_out", type=str, default="artifacts/denoise_demo.png")
-    p.add_argument("--decode", type=str, choices=["argmax", "sample"], default="argmax")
+    p.add_argument("--decode", type=str, choices=["argmax", "sample"], default="sample")
     p.add_argument("--seed", type=int, default=0)
     args = p.parse_args()
     run(args)

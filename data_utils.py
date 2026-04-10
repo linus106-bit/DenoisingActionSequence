@@ -54,7 +54,7 @@ def _path_to_actions(path: Sequence[Tuple[int, int]]) -> List[int]:
     return actions
 
 
-def _add_noise(clean_actions: Sequence[int], max_len: int, replace_p: float = 0.25, insert_p: float = 0.2) -> List[int]:
+def _add_noise(clean_actions: Sequence[int], max_len: int, replace_p: float = 1.0, insert_p: float = 0.0) -> List[int]:
     noisy: List[int] = []
     for a in clean_actions:
         if random.random() < replace_p:

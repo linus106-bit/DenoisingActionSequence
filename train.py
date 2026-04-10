@@ -125,7 +125,7 @@ def train(args):
 if __name__ == "__main__":
     p = argparse.ArgumentParser()
     p.add_argument("--n_samples", type=int, default=1500)
-    p.add_argument("--max_seq_len", type=int, default=40)
+    p.add_argument("--max_seq_len", type=int, default=10)
     p.add_argument("--batch_size", type=int, default=64)
     p.add_argument("--epochs", type=int, default=25)
     p.add_argument("--embed_dim", type=int, default=64)
