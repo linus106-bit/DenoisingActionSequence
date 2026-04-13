@@ -18,9 +18,14 @@
 ## 실행 예시
 
 ```bash
-python train.py --n_samples 1500 --epochs 25 --out checkpoints/fm_denoiser.pt
-python eval.py --ckpt checkpoints/fm_denoiser.pt --steps 25 --max_seq_len 40 --plot_out artifacts/denoise_demo.png
+python train.py --n_samples 1500 --grid_size 10 --epochs 25 --out checkpoints/fm_denoiser.pt
+python eval.py --ckpt checkpoints/fm_denoiser.pt --steps 25 --grid_size 10 --max_seq_len 40 --plot_dir artifacts/eval_plots
 ```
+
+## Grid size 변경
+
+- 학습 시 `--grid_size`로 데이터셋 격자 크기를 설정할 수 있습니다. (기본값: `10`)
+- 평가 시 `--grid_size`를 주지 않으면 체크포인트에 저장된 학습 설정값(`grid_size`)을 자동 사용합니다.
 
 ## 필요 패키지
 

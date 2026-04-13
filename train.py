@@ -85,7 +85,11 @@ def fm_loss(model, batch, device, return_debug: bool = False, pad_noise_prob: fl
 
 def train(args):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    dataset = GridDenoiseDataset(n_samples=args.n_samples, max_seq_len=args.max_seq_len)
+    dataset = GridDenoiseDataset(
+        n_samples=args.n_samples,
+        max_seq_len=args.max_seq_len,
+        grid_size=args.grid_size,
+    )
     loader = DataLoader(dataset, batch_size=args.batch_size, shuffle=True)
 
     model = FlowMatchingTransformer(embed_dim=args.embed_dim, n_layers=args.layers, n_heads=args.heads).to(device)
@@ -125,6 +129,7 @@ def train(args):
 if __name__ == "__main__":
     p = argparse.ArgumentParser()
     p.add_argument("--n_samples", type=int, default=1500)
+    p.add_argument("--grid_size", type=int, default=10)
     p.add_argument("--max_seq_len", type=int, default=10)
     p.add_argument("--batch_size", type=int, default=64)
     p.add_argument("--epochs", type=int, default=25)
