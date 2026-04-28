@@ -3,7 +3,9 @@
 `PROMPT.md` 요구사항을 반영해 다음 모듈을 구현했습니다.
 
 - `data_utils.py`: 10x10 grid 생성, shortest path 기반 clean action 생성, noisy action 합성, `Dataset` 제공
-- `model.py`: map encoder + action embedding + time embedding + transformer 기반 velocity field 예측기
+- `model/flow_matching.py`: map encoder + action embedding + time embedding + transformer 기반 velocity field 예측기
+- `model/autoregressive.py`: map 조건부 autoregressive trajectory 생성기
+- `model/common.py`: 두 모델이 공유하는 embedding / map encoder / token 상수
 - `train.py`: Flow Matching 학습 (`x_t=(1-t)x_0+t x_1`, target velocity `u_t=x_1-x_0`, MSE)
   - 학습은 `max_seq_len` 전체 포지션에 대해 loss를 계산해 고정 길이 시퀀스 동작을 유지
   - 학습용 corruption은 timestep `t`에 비례: 각 샘플에서 `floor(valid_len * t)`개 valid action만 랜덤 치환
@@ -20,6 +22,33 @@
 ```bash
 python train.py --n_samples 1500 --grid_size 10 --epochs 25 --out checkpoints/fm_denoiser.pt
 python eval.py --ckpt checkpoints/fm_denoiser.pt --steps 25 --grid_size 10 --max_seq_len 40 --plot_dir artifacts/eval_plots
+```
+
+> `train.py`는 `--model_type`으로 학습 대상을 통일해서 다룰 수 있습니다.
+> - Flow Matching: `--model_type flow_matching`
+> - Autoregressive: `--model_type autoregressive`
+
+## Autoregressive trajectory 모델 (신규)
+
+Flow Matching이 정답 시퀀스를 잘 복원하지 못할 때 비교할 수 있도록, map 조건부 **Autoregressive Transformer** 학습/평가 스크립트를 추가했습니다.
+
+- `train.py --model_type autoregressive`
+  - teacher forcing 학습 (`input=[BOS, y_0, ..., y_{T-1}]`, `target=[y_0, ..., y_T]`)
+  - PAD 토큰은 CE loss에서 제외
+  - 출력: `checkpoints/ar_trajectory.pt`
+- `train_ar.py`
+  - `train.py --model_type autoregressive`를 호출하는 얇은 래퍼(하위 호환용)
+- `eval_ar.py`
+  - BOS에서 시작해 한 토큰씩 autoregressive 생성
+  - `argmax` 또는 `sample` 디코딩 지원
+  - 기존 평가 지표(`valid_token_acc`, `trimmed_exact_match`, `goal_reached` 등) 그대로 JSON 저장
+
+실행 예시:
+
+```bash
+python train.py --model_type autoregressive --n_samples 1500 --epochs 25 --out checkpoints/ar_trajectory.pt
+# 또는 (호환) python train_ar.py --n_samples 1500 --epochs 25 --out checkpoints/ar_trajectory.pt
+python eval_ar.py --ckpt checkpoints/ar_trajectory.pt --decode argmax --num_eval_samples 10
 ```
 
 ## Grid size 변경

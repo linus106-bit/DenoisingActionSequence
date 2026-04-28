@@ -4,10 +4,11 @@ import argparse
 from pathlib import Path
 
 import torch
+import torch.nn.functional as F
 from torch.utils.data import DataLoader
 
 from data_utils import EOS_ACTION, GridDenoiseDataset, PAD_ACTION
-from model import FlowMatchingTransformer
+from model import AutoregressiveTrajectoryTransformer, BOS_TOKEN_ID, FlowMatchingTransformer
 
 
 def _tokenize_for_print(tokens: torch.Tensor) -> list[int]:
@@ -83,6 +84,19 @@ def fm_loss(model, batch, device, return_debug: bool = False, pad_noise_prob: fl
     return loss, debug
 
 
+def ar_loss(model: AutoregressiveTrajectoryTransformer, batch: dict, device: torch.device) -> torch.Tensor:
+    map_tensor = batch["map"].to(device)
+    clean = batch["clean_actions"].to(device)
+    bos = torch.full((clean.shape[0], 1), BOS_TOKEN_ID, dtype=torch.long, device=device)
+    tokens_in = torch.cat([bos, clean[:, :-1]], dim=1)
+    logits = model(tokens_in, map_tensor)
+    return F.cross_entropy(
+        logits.reshape(-1, logits.shape[-1]),
+        clean.reshape(-1),
+        ignore_index=PAD_ACTION,
+    )
+
+
 def train(args):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     dataset = GridDenoiseDataset(
@@ -92,20 +106,30 @@ def train(args):
     )
     loader = DataLoader(dataset, batch_size=args.batch_size, shuffle=True)
 
-    model = FlowMatchingTransformer(embed_dim=args.embed_dim, n_layers=args.layers, n_heads=args.heads).to(device)
-    opt = torch.optim.Adam(model.parameters(), lr=args.lr)
+    if args.model_type == "flow_matching":
+        model = FlowMatchingTransformer(embed_dim=args.embed_dim, n_layers=args.layers, n_heads=args.heads).to(device)
+        opt = torch.optim.Adam(model.parameters(), lr=args.lr)
+    elif args.model_type == "autoregressive":
+        model = AutoregressiveTrajectoryTransformer(embed_dim=args.embed_dim, n_layers=args.layers, n_heads=args.heads).to(device)
+        opt = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
+    else:
+        raise ValueError(f"Unsupported --model_type: {args.model_type}")
 
     for epoch in range(1, args.epochs + 1):
         model.train()
         running = 0.0
         for batch in loader:
             opt.zero_grad(set_to_none=True)
-            need_debug = epoch == 1 and running == 0.0
-            if need_debug:
+            need_debug = args.model_type == "flow_matching" and epoch == 1 and running == 0.0
+            if args.model_type == "flow_matching" and need_debug:
                 loss, dbg = fm_loss(model, batch, device, return_debug=True, pad_noise_prob=args.pad_noise_prob)
-            else:
+            elif args.model_type == "flow_matching":
                 loss = fm_loss(model, batch, device, pad_noise_prob=args.pad_noise_prob)
+            else:
+                loss = ar_loss(model, batch, device)
             loss.backward()
+            if args.model_type == "autoregressive":
+                torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
             opt.step()
             running += loss.item()
 
@@ -126,18 +150,25 @@ def train(args):
     print(f"Saved checkpoint: {out}")
 
 
-if __name__ == "__main__":
+def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser()
+    p.add_argument("--model_type", type=str, choices=["flow_matching", "autoregressive"], default="flow_matching")
     p.add_argument("--n_samples", type=int, default=1500)
     p.add_argument("--grid_size", type=int, default=10)
-    p.add_argument("--max_seq_len", type=int, default=10)
+    p.add_argument("--max_seq_len", type=int, default=40)
     p.add_argument("--batch_size", type=int, default=64)
     p.add_argument("--epochs", type=int, default=25)
     p.add_argument("--embed_dim", type=int, default=64)
     p.add_argument("--layers", type=int, default=3)
     p.add_argument("--heads", type=int, default=4)
     p.add_argument("--lr", type=float, default=2e-3)
+    p.add_argument("--weight_decay", type=float, default=1e-4)
     p.add_argument("--pad_noise_prob", type=float, default=1.0)
     p.add_argument("--out", type=str, default="checkpoints/fm_denoiser.pt")
+    return p
+
+
+if __name__ == "__main__":
+    p = build_parser()
     args = p.parse_args()
     train(args)
