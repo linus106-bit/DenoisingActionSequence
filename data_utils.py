@@ -68,8 +68,8 @@ def _add_noise(clean_actions: Sequence[int], max_len: int, replace_p: float = 1.
 
 def sample_grid_with_path(
     size: int = 10,
-    wall_ratio_range: Tuple[float, float] = (0.2, 0.3),
-    min_path_len: int = 8,
+    wall_ratio_range: Tuple[float, float] = (0.1, 0.2),
+    min_path_len: int = 4,
     max_tries: int = 200,
     max_seq_len: int = 40,
 ) -> GridSample:
