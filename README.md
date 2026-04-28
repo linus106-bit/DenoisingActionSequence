@@ -2,7 +2,7 @@
 
 `PROMPT.md` 요구사항을 반영해 다음 모듈을 구현했습니다.
 
-- `data_utils.py`: 10x10 grid 생성, shortest path 기반 clean action 생성, noisy action 합성, `Dataset` 제공
+- `data_utils.py`: 8x8 grid(기본) 생성, shortest path 기반 clean action 생성, noisy action 합성, `Dataset` 제공
 - `model/flow_matching.py`: map encoder + action embedding + time embedding + transformer 기반 velocity field 예측기
 - `model/autoregressive.py`: map 조건부 autoregressive trajectory 생성기
 - `model/common.py`: 두 모델이 공유하는 embedding / map encoder / token 상수
@@ -20,8 +20,8 @@
 ## 실행 예시
 
 ```bash
-python train.py --n_samples 1500 --grid_size 10 --epochs 25 --out checkpoints/fm_denoiser.pt
-python eval.py --ckpt checkpoints/fm_denoiser.pt --steps 25 --grid_size 10 --max_seq_len 40 --plot_dir artifacts/eval_plots
+python train.py --n_samples 1500 --grid_size 8 --epochs 25 --out checkpoints/fm_denoiser.pt
+python eval.py --ckpt checkpoints/fm_denoiser.pt --steps 25 --grid_size 8 --max_seq_len 40 --plot_dir artifacts/eval_plots
 ```
 
 > `train.py`는 `--model_type`으로 학습 대상을 통일해서 다룰 수 있습니다.
@@ -53,7 +53,7 @@ python eval_ar.py --ckpt checkpoints/ar_trajectory.pt --decode argmax --num_eval
 
 ## Grid size 변경
 
-- 학습 시 `--grid_size`로 데이터셋 격자 크기를 설정할 수 있습니다. (기본값: `10`)
+- 학습 시 `--grid_size`로 데이터셋 격자 크기를 설정할 수 있습니다. (기본값: `8`)
 - 평가 시 `--grid_size`를 주지 않으면 체크포인트에 저장된 학습 설정값(`grid_size`)을 자동 사용합니다.
 
 ## 필요 패키지

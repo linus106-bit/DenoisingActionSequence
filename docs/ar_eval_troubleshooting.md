@@ -58,11 +58,11 @@
 - `eval_ar.py`: `trim_at_stop()`이 EOS/PAD를 만나면 시퀀스 절단
 
 ## 6) 데이터 난이도 자체가 높은 편
-- 벽 비율 20~30%, 최단경로 길이 최소 8, grid 기본 10x10.
+- 벽 비율 기본 10~20%, 최단경로 길이 최소 4, grid 기본 8x8.
 - 경로 길이/장애물 조합이 다양해 소용량 모델/짧은 학습으로는 일반화가 어렵습니다.
 
 관련 코드:
-- `data_utils.py`: `wall_ratio_range=(0.2,0.3)`, `min_path_len=8`
+- `data_utils.py`: `wall_ratio_range=(0.1,0.2)`, `min_path_len=4`
 
 ## 모델 사이즈를 늘리는 것, 효과 있을까?
 - **네, 우선순위 높은 시도입니다.** 현재 기본값(`embed_dim=64`, `layers=3`, `heads=4`)은 작아서 복잡한 맵/긴 경로 일반화에 한계가 있을 수 있습니다.
@@ -89,4 +89,3 @@ python train.py --model_type autoregressive \
 4. **조기 EOS/PAD 억제**: 최소 길이 이전에는 EOS/PAD logit penalty.
 5. **목표 정렬 보조 loss**: rollout 기반 goal 보상(또는 differentiable surrogate) 추가.
 6. "denoising"이 목표라면 AR 입력에 `noisy_actions` 조건을 추가.
-
