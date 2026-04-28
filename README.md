@@ -41,7 +41,8 @@ Flow Matching이 정답 시퀀스를 잘 복원하지 못할 때 비교할 수 �
 - `eval_ar.py`
   - BOS에서 시작해 한 토큰씩 autoregressive 생성
   - `argmax` 또는 `sample` 디코딩 지원
-  - 기존 평가 지표(`valid_token_acc`, `trimmed_exact_match`, `goal_reached` 등) 그대로 JSON 저장
+  - 기존 평가 지표(`valid_token_acc`, `trimmed_exact_match`, `goal_reached` 등) JSON 저장
+  - 샘플별 예측 경로 시각화(`artifacts/eval_ar_plots/sample_XX.png`) 저장
 
 실행 예시:
 
