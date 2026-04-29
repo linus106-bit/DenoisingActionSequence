@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import argparse
-import math
 from pathlib import Path
 
 import torch
@@ -115,7 +114,6 @@ def train(args):
             ff_dim=args.ff_dim,
         ).to(device)
         opt = torch.optim.Adam(model.parameters(), lr=args.lr)
-        scheduler = None
     elif args.model_type == "autoregressive":
         model = AutoregressiveTrajectoryTransformer(
             embed_dim=args.embed_dim,
@@ -125,23 +123,6 @@ def train(args):
         ).to(device)
         opt = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
 
-        total_steps = max(len(loader) * args.epochs, 1)
-        warmup_steps = args.warmup_steps
-        if warmup_steps < 0:
-            warmup_steps = int(total_steps * args.warmup_ratio)
-        warmup_steps = max(0, min(warmup_steps, total_steps - 1)) if total_steps > 1 else 0
-
-        def lr_lambda(step: int) -> float:
-            if warmup_steps > 0 and step < warmup_steps:
-                return float(step + 1) / float(warmup_steps)
-            if total_steps <= warmup_steps + 1:
-                return 1.0
-            progress = float(step - warmup_steps) / float(total_steps - warmup_steps)
-            progress = min(max(progress, 0.0), 1.0)
-            cosine = 0.5 * (1.0 + math.cos(math.pi * progress))
-            return args.min_lr_ratio + (1.0 - args.min_lr_ratio) * cosine
-
-        scheduler = torch.optim.lr_scheduler.LambdaLR(opt, lr_lambda=lr_lambda)
     else:
         raise ValueError(f"Unsupported --model_type: {args.model_type}")
 
@@ -161,8 +142,6 @@ def train(args):
             if args.model_type == "autoregressive":
                 torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
             opt.step()
-            if scheduler is not None:
-                scheduler.step()
             running += loss.item()
 
             if need_debug:
@@ -193,12 +172,9 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--embed_dim", type=int, default=64)
     p.add_argument("--layers", type=int, default=3)
     p.add_argument("--heads", type=int, default=4)
-    p.add_argument("--ff_dim", type=int, default=256)
+    p.add_argument("--ff_dim", type=int, default=128)
     p.add_argument("--lr", type=float, default=2e-3)
     p.add_argument("--weight_decay", type=float, default=1e-4)
-    p.add_argument("--warmup_steps", type=int, default=-1, help="AR 전용. -1이면 warmup_ratio 기반 자동 계산")
-    p.add_argument("--warmup_ratio", type=float, default=0.1, help="AR 전용. warmup_steps=-1일 때 사용")
-    p.add_argument("--min_lr_ratio", type=float, default=0.1, help="AR 전용. cosine decay 최소 lr 비율")
     p.add_argument("--pad_noise_prob", type=float, default=1.0)
     p.add_argument("--out", type=str, default="checkpoints/fm_denoiser.pt")
     return p
