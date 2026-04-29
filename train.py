@@ -154,7 +154,7 @@ def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser()
     p.add_argument("--model_type", type=str, choices=["flow_matching", "autoregressive"], default="flow_matching")
     p.add_argument("--n_samples", type=int, default=1500)
-    p.add_argument("--grid_size", type=int, default=10)
+    p.add_argument("--grid_size", type=int, default=8)
     p.add_argument("--max_seq_len", type=int, default=40)
     p.add_argument("--batch_size", type=int, default=64)
     p.add_argument("--epochs", type=int, default=25)
