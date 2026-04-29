@@ -259,7 +259,7 @@ def run(args):
     model.eval()
 
     max_seq_len = args.max_seq_len if args.max_seq_len is not None else cfg["max_seq_len"]
-    grid_size = args.grid_size if args.grid_size is not None else cfg.get("grid_size", 10)
+    grid_size = args.grid_size if args.grid_size is not None else cfg.get("grid_size", 8)
     ds = GridDenoiseDataset(
         n_samples=args.num_eval_samples,
         max_seq_len=max_seq_len,
