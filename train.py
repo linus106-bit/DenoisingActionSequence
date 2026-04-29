@@ -5,6 +5,7 @@ from pathlib import Path
 
 import torch
 import torch.nn.functional as F
+import yaml
 from torch.utils.data import DataLoader
 
 from data_utils import EOS_ACTION, GridDenoiseDataset, PAD_ACTION
@@ -150,6 +151,32 @@ def train(args):
     print(f"Saved checkpoint: {out}")
 
 
+def apply_model_size_preset(args: argparse.Namespace) -> argparse.Namespace:
+    config_path = Path(args.model_config)
+    if not config_path.exists():
+        raise FileNotFoundError(f"Model config file not found: {config_path}")
+
+    config = yaml.safe_load(config_path.read_text())
+    presets = config.get("model_sizes", {})
+    if args.model_size not in presets:
+        available = ", ".join(sorted(presets.keys()))
+        raise ValueError(f"Unknown --model_size '{args.model_size}'. Available: {available}")
+
+    preset = presets[args.model_size]
+    for key in ("embed_dim", "layers", "heads"):
+        if key not in preset:
+            raise ValueError(f"Missing '{key}' in model size preset '{args.model_size}'")
+
+    args.embed_dim = int(preset["embed_dim"])
+    args.layers = int(preset["layers"])
+    args.heads = int(preset["heads"])
+    print(
+        f"[ModelSize] preset={args.model_size} "
+        f"embed_dim={args.embed_dim} layers={args.layers} heads={args.heads}"
+    )
+    return args
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser()
     p.add_argument("--model_type", type=str, choices=["flow_matching", "autoregressive"], default="flow_matching")
@@ -161,6 +188,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--embed_dim", type=int, default=64)
     p.add_argument("--layers", type=int, default=3)
     p.add_argument("--heads", type=int, default=4)
+    p.add_argument("--model_config", type=str, default="config.yaml")
+    p.add_argument("--model_size", type=str, default="base")
     p.add_argument("--lr", type=float, default=2e-3)
     p.add_argument("--weight_decay", type=float, default=1e-4)
     p.add_argument("--pad_noise_prob", type=float, default=1.0)
@@ -171,4 +200,5 @@ def build_parser() -> argparse.ArgumentParser:
 if __name__ == "__main__":
     p = build_parser()
     args = p.parse_args()
+    args = apply_model_size_preset(args)
     train(args)

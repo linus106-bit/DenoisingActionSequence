@@ -20,7 +20,7 @@
 ## 실행 예시
 
 ```bash
-python train.py --n_samples 1500 --grid_size 10 --epochs 25 --out checkpoints/fm_denoiser.pt
+python train.py --model_size base --n_samples 1500 --grid_size 10 --epochs 25 --out checkpoints/fm_denoiser.pt
 python eval.py --ckpt checkpoints/fm_denoiser.pt --steps 25 --grid_size 10 --max_seq_len 40 --plot_dir artifacts/eval_plots
 ```
 
@@ -46,9 +46,22 @@ Flow Matching이 정답 시퀀스를 잘 복원하지 못할 때 비교할 수 �
 실행 예시:
 
 ```bash
-python train.py --model_type autoregressive --n_samples 1500 --epochs 25 --out checkpoints/ar_trajectory.pt
+python train.py --model_type autoregressive --model_size base --n_samples 1500 --epochs 25 --out checkpoints/ar_trajectory.pt
 # 또는 (호환) python train_ar.py --n_samples 1500 --epochs 25 --out checkpoints/ar_trajectory.pt
 python eval_ar.py --ckpt checkpoints/ar_trajectory.pt --decode argmax --num_eval_samples 10
+```
+
+## 모델 사이즈 설정(config.yaml)
+
+- 루트의 `config.yaml`에서 모델 사이즈 프리셋(`tiny/small/base/large`)을 관리합니다.
+- `train.py`는 `--model_size`로 프리셋을 고르고, `--model_config`로 설정 파일 경로를 바꿀 수 있습니다.
+- 선택한 프리셋 값(`embed_dim`, `layers`, `heads`)이 CLI 기본값보다 우선 적용됩니다.
+
+예시:
+
+```bash
+python train.py --model_size tiny
+python train.py --model_size large --model_config config.yaml
 ```
 
 ## Grid size 변경
@@ -62,6 +75,7 @@ python eval_ar.py --ckpt checkpoints/ar_trajectory.pt --decode argmax --num_eval
 - `numpy`
 - `networkx`
 - `matplotlib`
+- `pyyaml`
 
 ## Padding 규칙
 
