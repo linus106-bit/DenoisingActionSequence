@@ -243,17 +243,27 @@ def set_seed(seed: int) -> None:
 
 
 def load_model(model_type: str, cfg: dict, device: torch.device):
+    ff_dim = cfg.get("ff_dim", 128)
     if model_type == "flow_matching":
         return FlowMatchingTransformer(
-            embed_dim=cfg["embed_dim"], n_layers=cfg["layers"], n_heads=cfg["heads"]
+            embed_dim=cfg["embed_dim"],
+            n_layers=cfg["layers"],
+            n_heads=cfg["heads"],
+            ff_dim=ff_dim,
         ).to(device)
     if model_type == "autoregressive":
         return AutoregressiveTrajectoryTransformer(
-            embed_dim=cfg["embed_dim"], n_layers=cfg["layers"], n_heads=cfg["heads"]
+            embed_dim=cfg["embed_dim"],
+            n_layers=cfg["layers"],
+            n_heads=cfg["heads"],
+            ff_dim=ff_dim,
         ).to(device)
     if model_type == "masked_diffusion":
         return MaskedDiffusionTrajectoryTransformer(
-            embed_dim=cfg["embed_dim"], n_layers=cfg["layers"], n_heads=cfg["heads"]
+            embed_dim=cfg["embed_dim"],
+            n_layers=cfg["layers"],
+            n_heads=cfg["heads"],
+            ff_dim=ff_dim,
         ).to(device)
     raise ValueError(f"Unsupported --model_type: {model_type}")
 
