@@ -11,7 +11,33 @@ import numpy as np
 import torch
 
 from data_utils import ACTIONS, EOS_ACTION, GridDenoiseDataset, PAD_ACTION
-from model import FlowMatchingTransformer
+from model import (
+    MASK_TOKEN_ID,
+    AutoregressiveTrajectoryTransformer,
+    FlowMatchingTransformer,
+    MaskedDiffusionTrajectoryTransformer,
+)
+
+MODEL_CKPT_DEFAULTS = {
+    "flow_matching": "checkpoints/fm_denoiser.pt",
+    "autoregressive": "checkpoints/ar_trajectory.pt",
+    "masked_diffusion": "checkpoints/masked_diffusion.pt",
+}
+MODEL_PLOT_DEFAULTS = {
+    "flow_matching": "artifacts/eval_plots",
+    "autoregressive": "artifacts/eval_ar_plots",
+    "masked_diffusion": "artifacts/eval_masked_diffusion_plots",
+}
+MODEL_RESULTS_DEFAULTS = {
+    "flow_matching": "artifacts/eval_results.json",
+    "autoregressive": "artifacts/eval_ar_results.json",
+    "masked_diffusion": "artifacts/eval_masked_diffusion_results.json",
+}
+MODEL_DECODE_DEFAULTS = {
+    "flow_matching": "sample",
+    "autoregressive": "argmax",
+    "masked_diffusion": "argmax",
+}
 
 
 def decode_actions_from_embeddings(
@@ -33,8 +59,8 @@ def rollout(start: Tuple[int, int], actions: List[int], grid):
     traj = [pos]
     h, w = grid.shape
     for a in actions:
-        # EOS/PAD are not real actions. Stop rollout when sequence terminates.
-        if a in (EOS_ACTION, PAD_ACTION):
+        # EOS/PAD/MASK are not real actions. Stop rollout when sequence terminates.
+        if a in (EOS_ACTION, PAD_ACTION, MASK_TOKEN_ID) or a not in ACTIONS:
             break
         dr, dc = ACTIONS[a]
         nr, nc = pos[0] + dr, pos[1] + dc
@@ -45,7 +71,7 @@ def rollout(start: Tuple[int, int], actions: List[int], grid):
 
 
 def trim_at_stop(actions: List[int]) -> List[int]:
-    stop_positions = [actions.index(token) for token in (EOS_ACTION, PAD_ACTION) if token in actions]
+    stop_positions = [actions.index(token) for token in (EOS_ACTION, PAD_ACTION, MASK_TOKEN_ID) if token in actions]
     if stop_positions:
         return actions[: min(stop_positions)]
     return actions
@@ -129,7 +155,21 @@ def aggregate_numeric_metrics(sample_results: list[dict]) -> dict[str, float]:
     return aggregated
 
 
-def plot_paths(
+def _draw_path_panel(ax, grid, start, goal, actions, title: str, color: str | None = None) -> None:
+    ax.imshow(grid, cmap="gray_r")
+    traj = rollout(start, actions, grid)
+    ys = [p[0] for p in traj]
+    xs = [p[1] for p in traj]
+    ax.plot(xs, ys, marker="o", linewidth=2, color=color)
+    ax.scatter(start[1], start[0], c="lime", s=80, label="start")
+    ax.scatter(goal[1], goal[0], c="red", s=80, label="goal")
+    ax.set_title(title)
+    ax.set_xlim(-0.5, grid.shape[1] - 0.5)
+    ax.set_ylim(grid.shape[0] - 0.5, -0.5)
+    ax.grid(True, alpha=0.3)
+
+
+def plot_flow_paths(
     grid,
     start,
     goal,
@@ -141,27 +181,53 @@ def plot_paths(
     multi_step_label: str,
 ):
     fig, axes = plt.subplots(1, 3, figsize=(15, 5))
-    titles = ["Noisy path", "one step", multi_step_label]
-    seqs = [noisy_actions, one_step_actions, multi_step_actions]
-
-    for idx, (ax, title, seq) in enumerate(zip(axes, titles, seqs)):
-        ax.imshow(grid, cmap="gray_r")
-        traj = rollout(start, seq, grid)
-        ys = [p[0] for p in traj]
-        xs = [p[1] for p in traj]
-        line_color = "orange" if idx == 0 else None
-        ax.plot(xs, ys, marker="o", linewidth=2, color=line_color)
-        ax.scatter(start[1], start[0], c="lime", s=80, label="start")
-        ax.scatter(goal[1], goal[0], c="red", s=80, label="goal")
-        ax.set_title(title)
-        ax.set_xlim(-0.5, grid.shape[1] - 0.5)
-        ax.set_ylim(grid.shape[0] - 0.5, -0.5)
-        ax.grid(True, alpha=0.3)
+    _draw_path_panel(axes[0], grid, start, goal, noisy_actions, "Noisy path", color="orange")
+    _draw_path_panel(axes[1], grid, start, goal, one_step_actions, "one step")
+    _draw_path_panel(axes[2], grid, start, goal, multi_step_actions, multi_step_label)
 
     clean_traj = rollout(start, clean_actions, grid)
     axes[2].plot([p[1] for p in clean_traj], [p[0] for p in clean_traj], "--", color="gold", label="clean gt")
     axes[2].legend(loc="upper right")
 
+    fig.tight_layout()
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(out_path, dpi=150)
+    plt.close(fig)
+
+
+def plot_pred_vs_clean(
+    grid,
+    start,
+    goal,
+    clean_actions,
+    pred_actions,
+    out_path: Path,
+    pred_title: str,
+):
+    fig, axes = plt.subplots(1, 2, figsize=(10, 5))
+    _draw_path_panel(axes[0], grid, start, goal, clean_actions, "Clean path")
+    _draw_path_panel(axes[1], grid, start, goal, pred_actions, pred_title)
+    axes[1].legend(loc="upper right")
+    fig.tight_layout()
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(out_path, dpi=150)
+    plt.close(fig)
+
+
+def plot_masked_paths(
+    grid,
+    start,
+    goal,
+    clean_actions,
+    masked_actions,
+    pred_actions,
+    out_path: Path,
+):
+    fig, axes = plt.subplots(1, 3, figsize=(15, 5))
+    _draw_path_panel(axes[0], grid, start, goal, clean_actions, "Clean path")
+    _draw_path_panel(axes[1], grid, start, goal, masked_actions, "Masked input")
+    _draw_path_panel(axes[2], grid, start, goal, pred_actions, "Masked diffusion pred")
+    axes[2].legend(loc="upper right")
     fig.tight_layout()
     out_path.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(out_path, dpi=150)
@@ -176,7 +242,39 @@ def set_seed(seed: int) -> None:
         torch.cuda.manual_seed_all(seed)
 
 
-def evaluate_sample(model: FlowMatchingTransformer, batch: dict, device: torch.device, args) -> dict:
+def load_model(model_type: str, cfg: dict, device: torch.device):
+    ff_dim = cfg.get("ff_dim", 128)
+    if model_type == "flow_matching":
+        return FlowMatchingTransformer(
+            embed_dim=cfg["embed_dim"],
+            n_layers=cfg["layers"],
+            n_heads=cfg["heads"],
+            ff_dim=ff_dim,
+        ).to(device)
+    if model_type == "autoregressive":
+        return AutoregressiveTrajectoryTransformer(
+            embed_dim=cfg["embed_dim"],
+            n_layers=cfg["layers"],
+            n_heads=cfg["heads"],
+            ff_dim=ff_dim,
+        ).to(device)
+    if model_type == "masked_diffusion":
+        return MaskedDiffusionTrajectoryTransformer(
+            embed_dim=cfg["embed_dim"],
+            n_layers=cfg["layers"],
+            n_heads=cfg["heads"],
+            ff_dim=ff_dim,
+        ).to(device)
+    raise ValueError(f"Unsupported --model_type: {model_type}")
+
+
+def resolve_model_type(requested_model_type: str, cfg: dict) -> str:
+    if requested_model_type != "auto":
+        return requested_model_type
+    return cfg.get("model_type", "flow_matching")
+
+
+def evaluate_flow_sample(model: FlowMatchingTransformer, batch: dict, device: torch.device, args) -> dict:
     map_tensor = batch["map"].unsqueeze(0).to(device)
     clean_actions = batch["clean_actions"].unsqueeze(0).to(device)
     noisy_actions = batch["noisy_actions"].unsqueeze(0).to(device)
@@ -244,55 +342,193 @@ def evaluate_sample(model: FlowMatchingTransformer, batch: dict, device: torch.d
     }
 
 
-def run(args):
-    if args.steps <= 0:
-        raise ValueError("--steps must be a positive integer")
+def evaluate_autoregressive_sample(model: AutoregressiveTrajectoryTransformer, batch: dict, device: torch.device, args) -> dict:
+    map_tensor = batch["map"].unsqueeze(0).to(device)
+    clean_actions = batch["clean_actions"][: args.max_seq_len_resolved].cpu()
+    clean_valid_len = int((clean_actions != PAD_ACTION).sum().item())
 
-    set_seed(args.seed)
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    ckpt = torch.load(args.ckpt, map_location=device)
-    cfg = ckpt["cfg"]
-    model = FlowMatchingTransformer(
-        embed_dim=cfg["embed_dim"], n_layers=cfg["layers"], n_heads=cfg["heads"]
-    ).to(device)
-    model.load_state_dict(ckpt["model"])
-    model.eval()
+    with torch.no_grad():
+        pred = model.generate(
+            map_tensor,
+            max_len=args.max_seq_len_resolved,
+            decode=args.decode,
+            temperature=args.temperature,
+        )[0].cpu()
 
-    max_seq_len = args.max_seq_len if args.max_seq_len is not None else cfg["max_seq_len"]
-    grid_size = args.grid_size if args.grid_size is not None else cfg.get("grid_size", 8)
-    ds = GridDenoiseDataset(
-        n_samples=args.num_eval_samples,
-        max_seq_len=max_seq_len,
-        grid_size=grid_size,
-    )
+    wall = batch["map"][0].numpy()
+    start_cell = tuple(torch.nonzero(batch["map"][1], as_tuple=False)[0].tolist())
+    goal_cell = tuple(torch.nonzero(batch["map"][2], as_tuple=False)[0].tolist())
+    pred_seq_metrics = sequence_metrics(pred, clean_actions, clean_valid_len)
+    pred_traj_metrics = trajectory_metrics(wall, start_cell, goal_cell, trim_at_stop(pred.tolist()))
 
-    plot_dir = Path(args.plot_dir)
-    plot_dir.mkdir(parents=True, exist_ok=True)
-    sample_results: list[dict] = []
+    return {
+        "wall": wall,
+        "start_cell": start_cell,
+        "goal_cell": goal_cell,
+        "clean_list": trim_at_stop(clean_actions.tolist()),
+        "pred_list": trim_at_stop(pred.tolist()),
+        "pred_sequence_metrics": pred_seq_metrics,
+        "pred_trajectory_metrics": pred_traj_metrics,
+    }
 
-    for sample_idx in range(args.num_eval_samples):
-        result = evaluate_sample(model, ds[sample_idx], device, args)
-        sample_results.append(
+
+def make_initial_mask(clean_actions: torch.Tensor, mask_ratio: float) -> tuple[torch.Tensor, torch.Tensor]:
+    valid_mask = clean_actions != PAD_ACTION
+    random_scores = torch.rand(clean_actions.shape, device=clean_actions.device)
+    mask_positions = (random_scores < mask_ratio) & valid_mask
+    if mask_ratio >= 1.0:
+        mask_positions = valid_mask.clone()
+    elif not bool(mask_positions.any()):
+        candidates = torch.nonzero(valid_mask, as_tuple=False).squeeze(-1)
+        if int(candidates.numel()) > 0:
+            chosen = candidates[torch.randint(candidates.numel(), (1,), device=clean_actions.device)]
+            mask_positions[chosen] = True
+    masked = clean_actions.clone()
+    masked[mask_positions] = MASK_TOKEN_ID
+    return masked, mask_positions
+
+
+@torch.no_grad()
+def iterative_masked_denoise(
+    model: MaskedDiffusionTrajectoryTransformer,
+    masked_actions: torch.Tensor,
+    mask_positions: torch.Tensor,
+    map_tensor: torch.Tensor,
+    steps: int,
+    decode: str,
+    temperature: float,
+) -> torch.Tensor:
+    if temperature <= 0:
+        raise ValueError("temperature must be positive")
+    tokens = masked_actions.clone()
+    remaining = mask_positions.clone()
+    total_masked = int(mask_positions.sum().item())
+    pad_mask = tokens == PAD_ACTION
+
+    for step in range(steps):
+        if not bool(remaining.any()):
+            break
+        t_value = max((steps - step) / max(steps, 1), 0.0)
+        t = torch.full((1,), t_value, device=tokens.device)
+        logits = model(tokens.unsqueeze(0), t, map_tensor, pad_mask=pad_mask.unsqueeze(0))[0]
+        logits[..., MASK_TOKEN_ID] = float("-inf")
+        if decode == "sample":
+            probs = torch.softmax(logits / temperature, dim=-1)
+            pred = torch.multinomial(probs, num_samples=1).squeeze(-1)
+            confidence = probs.gather(-1, pred.unsqueeze(-1)).squeeze(-1)
+        elif decode == "argmax":
+            probs = torch.softmax(logits, dim=-1)
+            confidence, pred = probs.max(dim=-1)
+        else:
+            raise ValueError(f"Unsupported decode mode: {decode}")
+
+        remaining_idx = torch.nonzero(remaining, as_tuple=False).squeeze(-1)
+        target_revealed = int(total_masked * (step + 1) / max(steps, 1))
+        already_revealed = total_masked - int(remaining.sum().item())
+        n_to_reveal = max(1, target_revealed - already_revealed)
+        n_to_reveal = min(n_to_reveal, int(remaining_idx.numel()))
+        chosen_rel = torch.topk(confidence[remaining_idx], k=n_to_reveal).indices
+        chosen = remaining_idx[chosen_rel]
+        tokens[chosen] = pred[chosen]
+        remaining[chosen] = False
+
+    if bool(remaining.any()):
+        t = torch.zeros((1,), device=tokens.device)
+        logits = model(tokens.unsqueeze(0), t, map_tensor, pad_mask=pad_mask.unsqueeze(0))[0]
+        logits[..., MASK_TOKEN_ID] = float("-inf")
+        pred = logits.argmax(dim=-1)
+        tokens[remaining] = pred[remaining]
+    return tokens
+
+
+def evaluate_masked_diffusion_sample(
+    model: MaskedDiffusionTrajectoryTransformer, batch: dict, device: torch.device, args
+) -> dict:
+    map_tensor = batch["map"].unsqueeze(0).to(device)
+    clean_actions = batch["clean_actions"][: args.max_seq_len_resolved].to(device)
+    clean_valid_len = int((clean_actions != PAD_ACTION).sum().item())
+    masked_actions, mask_positions = make_initial_mask(clean_actions, args.mask_ratio)
+    pred = iterative_masked_denoise(
+        model=model,
+        masked_actions=masked_actions,
+        mask_positions=mask_positions,
+        map_tensor=map_tensor,
+        steps=args.steps,
+        decode=args.decode,
+        temperature=args.temperature,
+    ).cpu()
+
+    clean_cpu = clean_actions.cpu()
+    masked_cpu = masked_actions.cpu()
+    wall = batch["map"][0].numpy()
+    start_cell = tuple(torch.nonzero(batch["map"][1], as_tuple=False)[0].tolist())
+    goal_cell = tuple(torch.nonzero(batch["map"][2], as_tuple=False)[0].tolist())
+    pred_seq_metrics = sequence_metrics(pred, clean_cpu, clean_valid_len)
+    pred_traj_metrics = trajectory_metrics(wall, start_cell, goal_cell, trim_at_stop(pred.tolist()))
+
+    return {
+        "wall": wall,
+        "start_cell": start_cell,
+        "goal_cell": goal_cell,
+        "mask_ratio": args.mask_ratio,
+        "masked_list": trim_at_stop(masked_cpu.tolist()),
+        "clean_list": trim_at_stop(clean_cpu.tolist()),
+        "pred_list": trim_at_stop(pred.tolist()),
+        "pred_sequence_metrics": pred_seq_metrics,
+        "pred_trajectory_metrics": pred_traj_metrics,
+    }
+
+
+def add_common_sample_fields(sample_idx: int, result: dict, plot_path: Path) -> dict:
+    return {
+        "sample_idx": sample_idx,
+        "start_cell": list(result["start_cell"]),
+        "goal_cell": list(result["goal_cell"]),
+        "pred_actions": result["pred_list"],
+        "clean_actions": result["clean_list"],
+        "pred_sequence_metrics": make_json_safe(result["pred_sequence_metrics"]),
+        "pred_trajectory_metrics": make_json_safe(result["pred_trajectory_metrics"]),
+        "plot_path": str(plot_path),
+    }
+
+
+def evaluate_sample(model, model_type: str, batch: dict, device: torch.device, args) -> dict:
+    if model_type == "flow_matching":
+        return evaluate_flow_sample(model, batch, device, args)
+    if model_type == "autoregressive":
+        return evaluate_autoregressive_sample(model, batch, device, args)
+    if model_type == "masked_diffusion":
+        return evaluate_masked_diffusion_sample(model, batch, device, args)
+    raise ValueError(f"Unsupported --model_type: {model_type}")
+
+
+def append_sample_result(model_type: str, sample_idx: int, result: dict, plot_path: Path) -> dict:
+    sample = add_common_sample_fields(sample_idx, result, plot_path)
+    if model_type == "flow_matching":
+        sample.update(
             {
-                "sample_idx": sample_idx,
-                "start_cell": list(result["start_cell"]),
-                "goal_cell": list(result["goal_cell"]),
                 "noisy_actions": result["noisy_list"],
                 "one_step_actions": result["one_step_list"],
-                "pred_actions": result["pred_list"],
-                "clean_actions": result["clean_list"],
                 "noisy_sequence_metrics": make_json_safe(result["noisy_sequence_metrics"]),
                 "one_step_sequence_metrics": make_json_safe(result["one_step_sequence_metrics"]),
-                "pred_sequence_metrics": make_json_safe(result["pred_sequence_metrics"]),
                 "noisy_trajectory_metrics": make_json_safe(result["noisy_trajectory_metrics"]),
                 "one_step_trajectory_metrics": make_json_safe(result["one_step_trajectory_metrics"]),
-                "pred_trajectory_metrics": make_json_safe(result["pred_trajectory_metrics"]),
                 "step_decodes": result["step_decodes"],
-                "plot_path": str(plot_dir / f"sample_{sample_idx:02d}.png"),
             }
         )
+    elif model_type == "masked_diffusion":
+        sample.update(
+            {
+                "mask_ratio": result["mask_ratio"],
+                "masked_actions": result["masked_list"],
+            }
+        )
+    return sample
 
-        plot_paths(
+
+def plot_sample(model_type: str, result: dict, plot_path: Path, args) -> None:
+    if model_type == "flow_matching":
+        plot_flow_paths(
             result["wall"],
             result["start_cell"],
             result["goal_cell"],
@@ -300,26 +536,87 @@ def run(args):
             result["one_step_list"],
             result["pred_list"],
             result["clean_list"],
-            plot_dir / f"sample_{sample_idx:02d}.png",
+            plot_path,
             multi_step_label=f"{args.steps} step",
         )
+    elif model_type == "autoregressive":
+        plot_pred_vs_clean(
+            result["wall"],
+            result["start_cell"],
+            result["goal_cell"],
+            result["clean_list"],
+            result["pred_list"],
+            plot_path,
+            pred_title="AR predicted path",
+        )
+    elif model_type == "masked_diffusion":
+        plot_masked_paths(
+            result["wall"],
+            result["start_cell"],
+            result["goal_cell"],
+            result["clean_list"],
+            result["masked_list"],
+            result["pred_list"],
+            plot_path,
+        )
+    else:
+        raise ValueError(f"Unsupported --model_type: {model_type}")
 
-        print(f"[sample {sample_idx:02d}] plot={plot_dir / f'sample_{sample_idx:02d}.png'}")
+
+def run(args):
+    if args.steps <= 0:
+        raise ValueError("--steps must be a positive integer")
+
+    set_seed(args.seed)
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    ckpt_path = args.ckpt or MODEL_CKPT_DEFAULTS.get(args.model_type, MODEL_CKPT_DEFAULTS["flow_matching"])
+    ckpt = torch.load(ckpt_path, map_location=device)
+    cfg = ckpt["cfg"]
+    model_type = resolve_model_type(args.model_type, cfg)
+    if args.decode is None:
+        args.decode = MODEL_DECODE_DEFAULTS[model_type]
+    model = load_model(model_type, cfg, device)
+    model.load_state_dict(ckpt["model"])
+    model.eval()
+
+    max_seq_len = args.max_seq_len if args.max_seq_len is not None else cfg["max_seq_len"]
+    args.max_seq_len_resolved = max_seq_len
+    grid_size = args.grid_size if args.grid_size is not None else cfg.get("grid_size", 8)
+    ds = GridDenoiseDataset(
+        n_samples=args.num_eval_samples,
+        max_seq_len=max_seq_len,
+        grid_size=grid_size,
+    )
+
+    plot_dir = Path(args.plot_dir or MODEL_PLOT_DEFAULTS[model_type])
+    results_out = Path(args.results_out or MODEL_RESULTS_DEFAULTS[model_type])
+    plot_dir.mkdir(parents=True, exist_ok=True)
+    sample_results: list[dict] = []
+
+    for sample_idx in range(args.num_eval_samples):
+        plot_path = plot_dir / f"sample_{sample_idx:02d}.png"
+        result = evaluate_sample(model, model_type, ds[sample_idx], device, args)
+        sample_results.append(append_sample_result(model_type, sample_idx, result, plot_path))
+        plot_sample(model_type, result, plot_path, args)
+
+        print(f"[sample {sample_idx:02d}] plot={plot_path}")
         print_metrics(f"Sample{sample_idx:02d}PredSequence", result["pred_sequence_metrics"])
         print_metrics(f"Sample{sample_idx:02d}PredTrajectory", result["pred_trajectory_metrics"])
 
     summary = {
-        "ckpt": args.ckpt,
+        "ckpt": ckpt_path,
+        "model_type": model_type,
         "decode": args.decode,
         "steps": args.steps,
         "seed": args.seed,
+        "temperature": args.temperature,
+        "mask_ratio": args.mask_ratio if model_type == "masked_diffusion" else None,
         "num_eval_samples": args.num_eval_samples,
         "grid_size": grid_size,
         "aggregate_pred_metrics": aggregate_numeric_metrics(sample_results),
         "samples": sample_results,
     }
 
-    results_out = Path(args.results_out)
     results_out.parent.mkdir(parents=True, exist_ok=True)
     results_out.write_text(json.dumps(summary, indent=2))
 
@@ -328,17 +625,29 @@ def run(args):
     print_metrics("AggregatePred", summary["aggregate_pred_metrics"])
 
 
-if __name__ == "__main__":
+def build_parser(default_model_type: str = "flow_matching") -> argparse.ArgumentParser:
     p = argparse.ArgumentParser()
-    p.add_argument("--ckpt", type=str, default="checkpoints/fm_denoiser.pt")
+    p.add_argument(
+        "--model_type",
+        type=str,
+        choices=["auto", "flow_matching", "autoregressive", "masked_diffusion"],
+        default=default_model_type,
+    )
+    p.add_argument("--ckpt", type=str, default=None)
     p.add_argument("--steps", type=int, default=25)
     p.add_argument("--grid_size", type=int, default=None)
     p.add_argument("--max_seq_len", type=int, default=None)
     p.add_argument("--num_eval_samples", type=int, default=10)
-    p.add_argument("--plot_dir", type=str, default="artifacts/eval_plots")
-    p.add_argument("--results_out", type=str, default="artifacts/eval_results.json")
-    p.add_argument("--decode", type=str, choices=["argmax", "sample"], default="sample")
+    p.add_argument("--plot_dir", type=str, default=None)
+    p.add_argument("--results_out", type=str, default=None)
+    p.add_argument("--decode", type=str, choices=["argmax", "sample"], default=None)
+    p.add_argument("--temperature", type=float, default=1.0)
+    p.add_argument("--mask_ratio", type=float, default=1.0)
     p.add_argument("--seed", type=int, default=0)
     p.add_argument("--save_step_decodes", action="store_true")
-    args = p.parse_args()
-    run(args)
+    return p
+
+
+if __name__ == "__main__":
+    parser = build_parser()
+    run(parser.parse_args())

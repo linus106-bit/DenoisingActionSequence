@@ -8,6 +8,9 @@ import torch.nn as nn
 EOS_TOKEN_ID = 5
 PAD_TOKEN_ID = 6
 BOS_TOKEN_ID = 0
+NUM_ACTION_TOKENS = 7
+MASK_TOKEN_ID = 7
+VOCAB_SIZE_WITH_MASK = NUM_ACTION_TOKENS + 1
 
 
 class SinusoidalTimeEmbedding(nn.Module):
