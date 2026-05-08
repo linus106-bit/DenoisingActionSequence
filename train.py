@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import math
 from pathlib import Path
 
 import torch
@@ -108,11 +109,37 @@ def train(args):
     loader = DataLoader(dataset, batch_size=args.batch_size, shuffle=True)
 
     if args.model_type == "flow_matching":
-        model = FlowMatchingTransformer(embed_dim=args.embed_dim, n_layers=args.layers, n_heads=args.heads).to(device)
+        model = FlowMatchingTransformer(
+            embed_dim=args.embed_dim,
+            n_layers=args.layers,
+            n_heads=args.heads,
+            ff_dim=args.ff_dim,
+        ).to(device)
         opt = torch.optim.Adam(model.parameters(), lr=args.lr)
+        scheduler = None
     elif args.model_type == "autoregressive":
-        model = AutoregressiveTrajectoryTransformer(embed_dim=args.embed_dim, n_layers=args.layers, n_heads=args.heads).to(device)
+        model = AutoregressiveTrajectoryTransformer(
+            embed_dim=args.embed_dim,
+            n_layers=args.layers,
+            n_heads=args.heads,
+            ff_dim=args.ff_dim,
+        ).to(device)
         opt = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
+        total_steps = max(args.epochs * len(loader), 1)
+        warmup_steps = args.warmup_steps
+        if warmup_steps < 0:
+            warmup_steps = int(total_steps * args.warmup_ratio)
+        warmup_steps = max(0, min(warmup_steps, total_steps - 1))
+
+        def lr_lambda(step: int) -> float:
+            if warmup_steps > 0 and step < warmup_steps:
+                return float(step + 1) / float(warmup_steps)
+            decay_steps = max(total_steps - warmup_steps, 1)
+            progress = min(max((step - warmup_steps) / decay_steps, 0.0), 1.0)
+            cosine = 0.5 * (1.0 + math.cos(math.pi * progress))
+            return args.min_lr_ratio + (1.0 - args.min_lr_ratio) * cosine
+
+        scheduler = torch.optim.lr_scheduler.LambdaLR(opt, lr_lambda=lr_lambda)
     else:
         raise ValueError(f"Unsupported --model_type: {args.model_type}")
 
@@ -132,6 +159,8 @@ def train(args):
             if args.model_type == "autoregressive":
                 torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
             opt.step()
+            if scheduler is not None:
+                scheduler.step()
             running += loss.item()
 
             if need_debug:
@@ -163,16 +192,18 @@ def apply_model_size_preset(args: argparse.Namespace) -> argparse.Namespace:
         raise ValueError(f"Unknown --model_size '{args.model_size}'. Available: {available}")
 
     preset = presets[args.model_size]
-    for key in ("embed_dim", "layers", "heads"):
+    for key in ("embed_dim", "ff_dim", "layers", "heads"):
         if key not in preset:
             raise ValueError(f"Missing '{key}' in model size preset '{args.model_size}'")
 
     args.embed_dim = int(preset["embed_dim"])
+    args.ff_dim = int(preset["ff_dim"])
     args.layers = int(preset["layers"])
     args.heads = int(preset["heads"])
     print(
         f"[ModelSize] preset={args.model_size} "
-        f"embed_dim={args.embed_dim} layers={args.layers} heads={args.heads}"
+        f"embed_dim={args.embed_dim} ff_dim={args.ff_dim} "
+        f"layers={args.layers} heads={args.heads}"
     )
     return args
 
@@ -188,10 +219,14 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--embed_dim", type=int, default=64)
     p.add_argument("--layers", type=int, default=3)
     p.add_argument("--heads", type=int, default=4)
+    p.add_argument("--ff_dim", type=int, default=128)
     p.add_argument("--model_config", type=str, default="config.yaml")
     p.add_argument("--model_size", type=str, default="base")
     p.add_argument("--lr", type=float, default=2e-3)
     p.add_argument("--weight_decay", type=float, default=1e-4)
+    p.add_argument("--warmup_steps", type=int, default=-1)
+    p.add_argument("--warmup_ratio", type=float, default=0.1)
+    p.add_argument("--min_lr_ratio", type=float, default=0.1)
     p.add_argument("--pad_noise_prob", type=float, default=1.0)
     p.add_argument("--out", type=str, default="checkpoints/fm_denoiser.pt")
     return p

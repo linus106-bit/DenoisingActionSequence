@@ -1,17 +1,21 @@
 model_sizes:
   tiny:
     embed_dim: 32
+    ff_dim: 64
     layers: 2
     heads: 2
   small:
     embed_dim: 48
+    ff_dim: 96
     layers: 3
     heads: 3
   base:
     embed_dim: 64
+    ff_dim: 128
     layers: 3
     heads: 4
   large:
     embed_dim: 96
+    ff_dim: 192
     layers: 4
     heads: 6
