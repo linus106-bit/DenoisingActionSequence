@@ -16,6 +16,7 @@ from model import (
     FlowMatchingTransformer,
     MaskedDiffusionTrajectoryTransformer,
     build_warmup_cosine_lr_scheduler,
+    forward_process,
 )
 
 
@@ -115,10 +116,12 @@ def masked_diffusion_loss(
     map_tensor = batch["map"].to(device)
     clean = batch["clean_actions"].to(device)
     valid_mask = clean != PAD_ACTION
-
-    mask_ratio = torch.empty(clean.shape[0], device=device).uniform_(min_mask_prob, max_mask_prob)
-    random_scores = torch.rand(clean.shape, device=device)
-    mask_positions = (random_scores < mask_ratio[:, None]) & valid_mask
+    masked, mask_positions, p_mask = forward_process(
+        clean,
+        valid_mask=valid_mask,
+        min_mask_prob=min_mask_prob,
+        max_mask_prob=max_mask_prob,
+    )
 
     # Ensure each sequence contributes at least one supervised denoising target.
     for i in range(clean.shape[0]):
@@ -127,18 +130,13 @@ def masked_diffusion_loss(
             if int(candidates.numel()) > 0:
                 chosen = candidates[torch.randint(candidates.numel(), (1,), device=device)]
                 mask_positions[i, chosen] = True
+                masked[i, chosen] = MASK_TOKEN_ID
 
-    masked = clean.clone()
-    masked[mask_positions] = MASK_TOKEN_ID
-    targets = clean.masked_fill(~mask_positions, PAD_ACTION)
     pad_mask = clean == PAD_ACTION
-
-    logits = model(masked, mask_ratio, map_tensor, pad_mask=pad_mask)
-    return F.cross_entropy(
-        logits.reshape(-1, logits.shape[-1]),
-        targets.reshape(-1),
-        ignore_index=PAD_ACTION,
-    )
+    logits = model(masked, map_tensor, pad_mask=pad_mask)
+    token_loss = F.cross_entropy(logits[mask_positions], clean[mask_positions], reduction="none")
+    token_loss = token_loss / p_mask[mask_positions].clamp_min(1e-6)
+    return token_loss.sum() / valid_mask.sum().clamp_min(1)
 
 
 def train(args):

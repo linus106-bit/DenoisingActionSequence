@@ -11,7 +11,7 @@ from .common import (
     warmup_cosine_lr_lambda,
 )
 from .flow_matching import FlowMatchingTransformer
-from .masked_diffusion import MaskedDiffusionTrajectoryTransformer
+from .masked_diffusion import MaskedDiffusionTrajectoryTransformer, forward_process
 
 __all__ = [
     "AutoregressiveTrajectoryTransformer",
@@ -20,6 +20,7 @@ __all__ = [
     "FlowMatchingTransformer",
     "MASK_TOKEN_ID",
     "MaskedDiffusionTrajectoryTransformer",
+    "forward_process",
     "NUM_ACTION_TOKENS",
     "PAD_TOKEN_ID",
     "VOCAB_SIZE_WITH_MASK",
