@@ -9,7 +9,13 @@ import yaml
 from torch.utils.data import DataLoader
 
 from data_utils import EOS_ACTION, GridDenoiseDataset, PAD_ACTION
-from model import AutoregressiveTrajectoryTransformer, BOS_TOKEN_ID, FlowMatchingTransformer
+from model import (
+    MASK_TOKEN_ID,
+    AutoregressiveTrajectoryTransformer,
+    BOS_TOKEN_ID,
+    FlowMatchingTransformer,
+    MaskedDiffusionTrajectoryTransformer,
+)
 
 
 def _tokenize_for_print(tokens: torch.Tensor) -> list[int]:
@@ -98,6 +104,42 @@ def ar_loss(model: AutoregressiveTrajectoryTransformer, batch: dict, device: tor
     )
 
 
+def masked_diffusion_loss(
+    model: MaskedDiffusionTrajectoryTransformer,
+    batch: dict,
+    device: torch.device,
+    min_mask_prob: float = 0.15,
+    max_mask_prob: float = 1.0,
+) -> torch.Tensor:
+    map_tensor = batch["map"].to(device)
+    clean = batch["clean_actions"].to(device)
+    valid_mask = clean != PAD_ACTION
+
+    mask_ratio = torch.empty(clean.shape[0], device=device).uniform_(min_mask_prob, max_mask_prob)
+    random_scores = torch.rand(clean.shape, device=device)
+    mask_positions = (random_scores < mask_ratio[:, None]) & valid_mask
+
+    # Ensure each sequence contributes at least one supervised denoising target.
+    for i in range(clean.shape[0]):
+        if not bool(mask_positions[i].any()):
+            candidates = torch.nonzero(valid_mask[i], as_tuple=False).squeeze(-1)
+            if int(candidates.numel()) > 0:
+                chosen = candidates[torch.randint(candidates.numel(), (1,), device=device)]
+                mask_positions[i, chosen] = True
+
+    masked = clean.clone()
+    masked[mask_positions] = MASK_TOKEN_ID
+    targets = clean.masked_fill(~mask_positions, PAD_ACTION)
+    pad_mask = clean == PAD_ACTION
+
+    logits = model(masked, mask_ratio, map_tensor, pad_mask=pad_mask)
+    return F.cross_entropy(
+        logits.reshape(-1, logits.shape[-1]),
+        targets.reshape(-1),
+        ignore_index=PAD_ACTION,
+    )
+
+
 def train(args):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     dataset = GridDenoiseDataset(
@@ -113,6 +155,9 @@ def train(args):
     elif args.model_type == "autoregressive":
         model = AutoregressiveTrajectoryTransformer(embed_dim=args.embed_dim, n_layers=args.layers, n_heads=args.heads).to(device)
         opt = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
+    elif args.model_type == "masked_diffusion":
+        model = MaskedDiffusionTrajectoryTransformer(embed_dim=args.embed_dim, n_layers=args.layers, n_heads=args.heads).to(device)
+        opt = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
     else:
         raise ValueError(f"Unsupported --model_type: {args.model_type}")
 
@@ -126,10 +171,18 @@ def train(args):
                 loss, dbg = fm_loss(model, batch, device, return_debug=True, pad_noise_prob=args.pad_noise_prob)
             elif args.model_type == "flow_matching":
                 loss = fm_loss(model, batch, device, pad_noise_prob=args.pad_noise_prob)
-            else:
+            elif args.model_type == "autoregressive":
                 loss = ar_loss(model, batch, device)
+            else:
+                loss = masked_diffusion_loss(
+                    model,
+                    batch,
+                    device,
+                    min_mask_prob=args.mask_min_prob,
+                    max_mask_prob=args.mask_max_prob,
+                )
             loss.backward()
-            if args.model_type == "autoregressive":
+            if args.model_type in ("autoregressive", "masked_diffusion"):
                 torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
             opt.step()
             running += loss.item()
@@ -179,7 +232,7 @@ def apply_model_size_preset(args: argparse.Namespace) -> argparse.Namespace:
 
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser()
-    p.add_argument("--model_type", type=str, choices=["flow_matching", "autoregressive"], default="flow_matching")
+    p.add_argument("--model_type", type=str, choices=["flow_matching", "autoregressive", "masked_diffusion"], default="flow_matching")
     p.add_argument("--n_samples", type=int, default=1500)
     p.add_argument("--grid_size", type=int, default=8)
     p.add_argument("--max_seq_len", type=int, default=40)
@@ -193,6 +246,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--lr", type=float, default=2e-3)
     p.add_argument("--weight_decay", type=float, default=1e-4)
     p.add_argument("--pad_noise_prob", type=float, default=1.0)
+    p.add_argument("--mask_min_prob", type=float, default=0.15)
+    p.add_argument("--mask_max_prob", type=float, default=1.0)
     p.add_argument("--out", type=str, default="checkpoints/fm_denoiser.pt")
     return p
 

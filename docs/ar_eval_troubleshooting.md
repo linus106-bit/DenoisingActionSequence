@@ -1,6 +1,6 @@
 # AR eval에서 `goal_reached`가 잘 안 나오는 이유 (코드 기반 진단)
 
-이 문서는 `eval_ar.py`/`train.py`/`data_utils.py` 구현을 기준으로, 100개 샘플 평가에서 목표 도달률이 낮게 나오는 전형적인 원인을 정리합니다.
+이 문서는 `eval.py --model_type autoregressive`/`train.py`/`data_utils.py` 구현을 기준으로, 100개 샘플 평가에서 목표 도달률이 낮게 나오는 전형적인 원인을 정리합니다.
 
 ## 현재 AR 학습 방식 한 줄 요약
 - **네, 현재 AR은 Next Token Prediction(다음 액션 토큰 예측)으로 학습합니다.**
@@ -15,12 +15,12 @@
 
 ## 1) Train/Eval 분포 차이 (매번 새로운 랜덤 맵)
 - 학습 데이터와 평가 데이터 모두 `GridDenoiseDataset`를 새로 샘플링합니다.
-- `eval_ar.py`는 체크포인트를 불러온 뒤, 평가용 데이터셋을 다시 생성합니다.
+- `eval.py --model_type autoregressive`는 체크포인트를 불러온 뒤, 평가용 데이터셋을 다시 생성합니다.
 - 즉 **학습에서 본 맵/경로와 다른 분포 샘플**에서 일반화를 바로 요구합니다.
 
 관련 코드:
 - `train.py`: `GridDenoiseDataset(n_samples=args.n_samples, ...)`로 학습셋 생성
-- `eval_ar.py`: `GridDenoiseDataset(n_samples=args.num_eval_samples, ...)`로 평가셋 재생성
+- `eval.py --model_type autoregressive`: `GridDenoiseDataset(n_samples=args.num_eval_samples, ...)`로 평가셋 재생성
 
 ## 2) AR 학습 목표는 token CE라서, trajectory 성공률과 직접 정렬되지 않음
 - AR loss는 teacher forcing + token 단위 cross entropy입니다.
@@ -29,7 +29,7 @@
 
 관련 코드:
 - `train.py`: `ar_loss()`에서 `F.cross_entropy(..., ignore_index=PAD_ACTION)` 사용
-- `eval_ar.py`: 평가지표는 `trajectory_metrics(..., goal_reached)` 별도 계산
+- `eval.py --model_type autoregressive`: 평가지표는 `trajectory_metrics(..., goal_reached)` 별도 계산
 
 ## 3) Teacher forcing ↔ 생성 시 free-running 간 노출 편향
 - 학습 시 입력은 `[BOS, 정답 prefix]`입니다.
@@ -47,7 +47,7 @@
 
 관련 코드:
 - `train.py`의 `ar_loss()`는 `clean_actions`만 사용
-- `eval_ar.py`도 `model.generate(map_tensor, ...)`만 호출
+- `eval.py --model_type autoregressive`도 `model.generate(map_tensor, ...)`만 호출
 
 ## 5) 생성 종료 규칙이 조기 종료를 유도할 수 있음
 - 디코딩 시 BOS만 금지하고 EOS/PAD는 허용됩니다.
@@ -55,7 +55,7 @@
 
 관련 코드:
 - `model/autoregressive.py`: `logits[:, BOS_TOKEN_ID] = -inf` (EOS/PAD는 금지 안 함)
-- `eval_ar.py`: `trim_at_stop()`이 EOS/PAD를 만나면 시퀀스 절단
+- `eval.py --model_type autoregressive`: `trim_at_stop()`이 EOS/PAD를 만나면 시퀀스 절단
 
 ## 6) 데이터 난이도 자체가 높은 편
 - 벽 비율 기본 10~20%, 최단경로 길이 최소 4, grid 기본 8x8.
