@@ -408,9 +408,7 @@ def iterative_masked_denoise(
     for step in range(steps):
         if not bool(remaining.any()):
             break
-        t_value = max((steps - step) / max(steps, 1), 0.0)
-        t = torch.full((1,), t_value, device=tokens.device)
-        logits = model(tokens.unsqueeze(0), t, map_tensor, pad_mask=pad_mask.unsqueeze(0))[0]
+        logits = model(tokens.unsqueeze(0), map_tensor, pad_mask=pad_mask.unsqueeze(0))[0]
         logits[..., MASK_TOKEN_ID] = float("-inf")
         if decode == "sample":
             probs = torch.softmax(logits / temperature, dim=-1)
@@ -433,8 +431,7 @@ def iterative_masked_denoise(
         remaining[chosen] = False
 
     if bool(remaining.any()):
-        t = torch.zeros((1,), device=tokens.device)
-        logits = model(tokens.unsqueeze(0), t, map_tensor, pad_mask=pad_mask.unsqueeze(0))[0]
+        logits = model(tokens.unsqueeze(0), map_tensor, pad_mask=pad_mask.unsqueeze(0))[0]
         logits[..., MASK_TOKEN_ID] = float("-inf")
         pred = logits.argmax(dim=-1)
         tokens[remaining] = pred[remaining]
