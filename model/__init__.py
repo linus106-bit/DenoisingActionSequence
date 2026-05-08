@@ -6,6 +6,9 @@ from .common import (
     NUM_ACTION_TOKENS,
     PAD_TOKEN_ID,
     VOCAB_SIZE_WITH_MASK,
+    build_warmup_cosine_lr_scheduler,
+    resolve_warmup_steps,
+    warmup_cosine_lr_lambda,
 )
 from .flow_matching import FlowMatchingTransformer
 from .masked_diffusion import MaskedDiffusionTrajectoryTransformer
@@ -20,4 +23,7 @@ __all__ = [
     "NUM_ACTION_TOKENS",
     "PAD_TOKEN_ID",
     "VOCAB_SIZE_WITH_MASK",
+    "build_warmup_cosine_lr_scheduler",
+    "resolve_warmup_steps",
+    "warmup_cosine_lr_lambda",
 ]

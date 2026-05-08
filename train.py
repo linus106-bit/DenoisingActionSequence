@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import argparse
-import math
 from pathlib import Path
 
 import torch
@@ -16,6 +15,7 @@ from model import (
     BOS_TOKEN_ID,
     FlowMatchingTransformer,
     MaskedDiffusionTrajectoryTransformer,
+    build_warmup_cosine_lr_scheduler,
 )
 
 
@@ -158,7 +158,6 @@ def train(args):
             ff_dim=args.ff_dim,
         ).to(device)
         opt = torch.optim.Adam(model.parameters(), lr=args.lr)
-        scheduler = None
     elif args.model_type == "autoregressive":
         model = AutoregressiveTrajectoryTransformer(
             embed_dim=args.embed_dim,
@@ -167,21 +166,6 @@ def train(args):
             ff_dim=args.ff_dim,
         ).to(device)
         opt = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
-        total_steps = max(args.epochs * len(loader), 1)
-        warmup_steps = args.warmup_steps
-        if warmup_steps < 0:
-            warmup_steps = int(total_steps * args.warmup_ratio)
-        warmup_steps = max(0, min(warmup_steps, total_steps - 1))
-
-        def lr_lambda(step: int) -> float:
-            if warmup_steps > 0 and step < warmup_steps:
-                return float(step + 1) / float(warmup_steps)
-            decay_steps = max(total_steps - warmup_steps, 1)
-            progress = min(max((step - warmup_steps) / decay_steps, 0.0), 1.0)
-            cosine = 0.5 * (1.0 + math.cos(math.pi * progress))
-            return args.min_lr_ratio + (1.0 - args.min_lr_ratio) * cosine
-
-        scheduler = torch.optim.lr_scheduler.LambdaLR(opt, lr_lambda=lr_lambda)
     elif args.model_type == "masked_diffusion":
         model = MaskedDiffusionTrajectoryTransformer(
             embed_dim=args.embed_dim,
@@ -190,9 +174,22 @@ def train(args):
             ff_dim=args.ff_dim,
         ).to(device)
         opt = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
-        scheduler = None
     else:
         raise ValueError(f"Unsupported --model_type: {args.model_type}")
+
+    total_steps = max(args.epochs * len(loader), 1)
+    scheduler, warmup_steps = build_warmup_cosine_lr_scheduler(
+        opt,
+        total_steps=total_steps,
+        warmup_steps=args.warmup_steps,
+        warmup_ratio=args.warmup_ratio,
+        min_lr_ratio=args.min_lr_ratio,
+    )
+    print(
+        f"[LR] schedule=linear_warmup_cosine "
+        f"total_steps={total_steps} warmup_steps={warmup_steps} "
+        f"min_lr_ratio={args.min_lr_ratio}"
+    )
 
     for epoch in range(1, args.epochs + 1):
         model.train()
