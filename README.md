@@ -35,7 +35,7 @@ python eval.py --model_type masked_diffusion --ckpt checkpoints/masked_diffusion
 
 - **Flow Matching** (`flow_matching`): clean token embedding과 noisy token embedding 사이의 연속 경로 `x_t`에서 velocity를 예측합니다. 평가 시 Euler 적분으로 noisy sequence를 점진적으로 clean embedding 쪽으로 이동시킨 뒤 token으로 디코딩합니다.
 - **Autoregressive** (`autoregressive`): BOS에서 시작해 이전 token들을 조건으로 다음 action token을 순차 생성합니다. teacher forcing cross entropy로 학습하며 PAD는 loss에서 제외합니다.
-- **Masked Diffusion** (`masked_diffusion`): clean action sequence의 PAD가 아닌 위치 일부를 `MASK_TOKEN_ID=7`로 치환하고, map과 mask ratio/timestep 조건을 사용해 마스킹된 위치의 원래 token을 병렬 복원합니다. loss는 PAD 위치와 마스킹되지 않은 위치를 ignore 처리합니다.
+- **Masked Diffusion** (`masked_diffusion`): clean action sequence의 PAD가 아닌 위치 일부를 `MASK_TOKEN_ID=7`로 치환하고, LLaDA처럼 timestep embedding 없이 map 조건과 양방향 Transformer encoder로 마스킹된 위치의 원래 token을 병렬 복원합니다. loss는 PAD 위치와 마스킹되지 않은 위치를 제외하고, sampled mask probability로 reweight합니다.
 
 ## Masked Diffusion trajectory 모델
 
