@@ -12,6 +12,7 @@ from .common import (
 )
 from .flow_matching import FlowMatchingTransformer
 from .masked_diffusion import MaskedDiffusionTrajectoryTransformer, forward_process
+from .uniform_diffusion import UniformDiffusionTrajectoryTransformer, uniform_forward_process
 
 __all__ = [
     "AutoregressiveTrajectoryTransformer",
@@ -20,7 +21,9 @@ __all__ = [
     "FlowMatchingTransformer",
     "MASK_TOKEN_ID",
     "MaskedDiffusionTrajectoryTransformer",
+    "UniformDiffusionTrajectoryTransformer",
     "forward_process",
+    "uniform_forward_process",
     "NUM_ACTION_TOKENS",
     "PAD_TOKEN_ID",
     "VOCAB_SIZE_WITH_MASK",

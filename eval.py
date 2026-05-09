@@ -16,27 +16,32 @@ from model import (
     AutoregressiveTrajectoryTransformer,
     FlowMatchingTransformer,
     MaskedDiffusionTrajectoryTransformer,
+    UniformDiffusionTrajectoryTransformer,
 )
 
 MODEL_CKPT_DEFAULTS = {
     "flow_matching": "checkpoints/fm_denoiser.pt",
     "autoregressive": "checkpoints/ar_trajectory.pt",
     "masked_diffusion": "checkpoints/masked_diffusion.pt",
+    "uniform_diffusion": "checkpoints/uniform_diffusion.pt",
 }
 MODEL_PLOT_DEFAULTS = {
     "flow_matching": "artifacts/eval_plots",
     "autoregressive": "artifacts/eval_ar_plots",
     "masked_diffusion": "artifacts/eval_masked_diffusion_plots",
+    "uniform_diffusion": "artifacts/eval_uniform_diffusion_plots",
 }
 MODEL_RESULTS_DEFAULTS = {
     "flow_matching": "artifacts/eval_results.json",
     "autoregressive": "artifacts/eval_ar_results.json",
     "masked_diffusion": "artifacts/eval_masked_diffusion_results.json",
+    "uniform_diffusion": "artifacts/eval_uniform_diffusion_results.json",
 }
 MODEL_DECODE_DEFAULTS = {
     "flow_matching": "sample",
     "autoregressive": "argmax",
     "masked_diffusion": "argmax",
+    "uniform_diffusion": "argmax",
 }
 
 
@@ -214,19 +219,21 @@ def plot_pred_vs_clean(
     plt.close(fig)
 
 
-def plot_masked_paths(
+def plot_diffusion_paths(
     grid,
     start,
     goal,
     clean_actions,
-    masked_actions,
+    noisy_actions,
     pred_actions,
     out_path: Path,
+    input_title: str,
+    pred_title: str,
 ):
     fig, axes = plt.subplots(1, 3, figsize=(15, 5))
     _draw_path_panel(axes[0], grid, start, goal, clean_actions, "Clean path")
-    _draw_path_panel(axes[1], grid, start, goal, masked_actions, "Masked input")
-    _draw_path_panel(axes[2], grid, start, goal, pred_actions, "Masked diffusion pred")
+    _draw_path_panel(axes[1], grid, start, goal, noisy_actions, input_title)
+    _draw_path_panel(axes[2], grid, start, goal, pred_actions, pred_title)
     axes[2].legend(loc="upper right")
     fig.tight_layout()
     out_path.parent.mkdir(parents=True, exist_ok=True)
@@ -260,6 +267,13 @@ def load_model(model_type: str, cfg: dict, device: torch.device):
         ).to(device)
     if model_type == "masked_diffusion":
         return MaskedDiffusionTrajectoryTransformer(
+            embed_dim=cfg["embed_dim"],
+            n_layers=cfg["layers"],
+            n_heads=cfg["heads"],
+            ff_dim=ff_dim,
+        ).to(device)
+    if model_type == "uniform_diffusion":
+        return UniformDiffusionTrajectoryTransformer(
             embed_dim=cfg["embed_dim"],
             n_layers=cfg["layers"],
             n_heads=cfg["heads"],
@@ -388,6 +402,26 @@ def make_initial_mask(clean_actions: torch.Tensor, mask_ratio: float) -> tuple[t
     return masked, mask_positions
 
 
+def make_initial_uniform_noise(clean_actions: torch.Tensor, noise_ratio: float) -> tuple[torch.Tensor, torch.Tensor]:
+    valid_mask = clean_actions != PAD_ACTION
+    random_scores = torch.rand(clean_actions.shape, device=clean_actions.device)
+    noise_positions = (random_scores < noise_ratio) & valid_mask
+    if noise_ratio >= 1.0:
+        noise_positions = valid_mask.clone()
+    elif not bool(noise_positions.any()):
+        candidates = torch.nonzero(valid_mask, as_tuple=False).squeeze(-1)
+        if int(candidates.numel()) > 0:
+            chosen = candidates[torch.randint(candidates.numel(), (1,), device=clean_actions.device)]
+            noise_positions[chosen] = True
+
+    noisy = clean_actions.clone()
+    if bool(noise_positions.any()):
+        original = clean_actions[noise_positions]
+        delta = torch.randint(1, EOS_ACTION, size=original.shape, device=clean_actions.device)
+        noisy[noise_positions] = ((original - 1 + delta) % EOS_ACTION) + 1
+    return noisy, noise_positions
+
+
 @torch.no_grad()
 def iterative_masked_denoise(
     model: MaskedDiffusionTrajectoryTransformer,
@@ -397,6 +431,7 @@ def iterative_masked_denoise(
     steps: int,
     decode: str,
     temperature: float,
+    forbidden_token_ids: tuple[int, ...] = (MASK_TOKEN_ID,),
 ) -> torch.Tensor:
     if temperature <= 0:
         raise ValueError("temperature must be positive")
@@ -409,7 +444,9 @@ def iterative_masked_denoise(
         if not bool(remaining.any()):
             break
         logits = model(tokens.unsqueeze(0), map_tensor, pad_mask=pad_mask.unsqueeze(0))[0]
-        logits[..., MASK_TOKEN_ID] = float("-inf")
+        for token_id in forbidden_token_ids:
+            if token_id < logits.shape[-1]:
+                logits[..., token_id] = float("-inf")
         if decode == "sample":
             probs = torch.softmax(logits / temperature, dim=-1)
             pred = torch.multinomial(probs, num_samples=1).squeeze(-1)
@@ -432,7 +469,9 @@ def iterative_masked_denoise(
 
     if bool(remaining.any()):
         logits = model(tokens.unsqueeze(0), map_tensor, pad_mask=pad_mask.unsqueeze(0))[0]
-        logits[..., MASK_TOKEN_ID] = float("-inf")
+        for token_id in forbidden_token_ids:
+            if token_id < logits.shape[-1]:
+                logits[..., token_id] = float("-inf")
         pred = logits.argmax(dim=-1)
         tokens[remaining] = pred[remaining]
     return tokens
@@ -476,6 +515,45 @@ def evaluate_masked_diffusion_sample(
     }
 
 
+def evaluate_uniform_diffusion_sample(
+    model: UniformDiffusionTrajectoryTransformer, batch: dict, device: torch.device, args
+) -> dict:
+    map_tensor = batch["map"].unsqueeze(0).to(device)
+    clean_actions = batch["clean_actions"][: args.max_seq_len_resolved].to(device)
+    clean_valid_len = int((clean_actions != PAD_ACTION).sum().item())
+    noisy_actions, noise_positions = make_initial_uniform_noise(clean_actions, args.mask_ratio)
+    pred = iterative_masked_denoise(
+        model=model,
+        masked_actions=noisy_actions,
+        mask_positions=noise_positions,
+        map_tensor=map_tensor,
+        steps=args.steps,
+        decode=args.decode,
+        temperature=args.temperature,
+        forbidden_token_ids=(),
+    ).cpu()
+
+    clean_cpu = clean_actions.cpu()
+    noisy_cpu = noisy_actions.cpu()
+    wall = batch["map"][0].numpy()
+    start_cell = tuple(torch.nonzero(batch["map"][1], as_tuple=False)[0].tolist())
+    goal_cell = tuple(torch.nonzero(batch["map"][2], as_tuple=False)[0].tolist())
+    pred_seq_metrics = sequence_metrics(pred, clean_cpu, clean_valid_len)
+    pred_traj_metrics = trajectory_metrics(wall, start_cell, goal_cell, trim_at_stop(pred.tolist()))
+
+    return {
+        "wall": wall,
+        "start_cell": start_cell,
+        "goal_cell": goal_cell,
+        "noise_ratio": args.mask_ratio,
+        "noisy_list": trim_at_stop(noisy_cpu.tolist()),
+        "clean_list": trim_at_stop(clean_cpu.tolist()),
+        "pred_list": trim_at_stop(pred.tolist()),
+        "pred_sequence_metrics": pred_seq_metrics,
+        "pred_trajectory_metrics": pred_traj_metrics,
+    }
+
+
 def add_common_sample_fields(sample_idx: int, result: dict, plot_path: Path) -> dict:
     return {
         "sample_idx": sample_idx,
@@ -496,6 +574,8 @@ def evaluate_sample(model, model_type: str, batch: dict, device: torch.device, a
         return evaluate_autoregressive_sample(model, batch, device, args)
     if model_type == "masked_diffusion":
         return evaluate_masked_diffusion_sample(model, batch, device, args)
+    if model_type == "uniform_diffusion":
+        return evaluate_uniform_diffusion_sample(model, batch, device, args)
     raise ValueError(f"Unsupported --model_type: {model_type}")
 
 
@@ -518,6 +598,13 @@ def append_sample_result(model_type: str, sample_idx: int, result: dict, plot_pa
             {
                 "mask_ratio": result["mask_ratio"],
                 "masked_actions": result["masked_list"],
+            }
+        )
+    elif model_type == "uniform_diffusion":
+        sample.update(
+            {
+                "noise_ratio": result["noise_ratio"],
+                "noisy_actions": result["noisy_list"],
             }
         )
     return sample
@@ -547,7 +634,7 @@ def plot_sample(model_type: str, result: dict, plot_path: Path, args) -> None:
             pred_title="AR predicted path",
         )
     elif model_type == "masked_diffusion":
-        plot_masked_paths(
+        plot_diffusion_paths(
             result["wall"],
             result["start_cell"],
             result["goal_cell"],
@@ -555,6 +642,20 @@ def plot_sample(model_type: str, result: dict, plot_path: Path, args) -> None:
             result["masked_list"],
             result["pred_list"],
             plot_path,
+            input_title="Masked input",
+            pred_title="Masked diffusion pred",
+        )
+    elif model_type == "uniform_diffusion":
+        plot_diffusion_paths(
+            result["wall"],
+            result["start_cell"],
+            result["goal_cell"],
+            result["clean_list"],
+            result["noisy_list"],
+            result["pred_list"],
+            plot_path,
+            input_title="Random-token input",
+            pred_title="Uniform diffusion pred",
         )
     else:
         raise ValueError(f"Unsupported --model_type: {model_type}")
@@ -608,6 +709,7 @@ def run(args):
         "seed": args.seed,
         "temperature": args.temperature,
         "mask_ratio": args.mask_ratio if model_type == "masked_diffusion" else None,
+        "noise_ratio": args.mask_ratio if model_type == "uniform_diffusion" else None,
         "num_eval_samples": args.num_eval_samples,
         "grid_size": grid_size,
         "aggregate_pred_metrics": aggregate_numeric_metrics(sample_results),
@@ -627,7 +729,7 @@ def build_parser(default_model_type: str = "flow_matching") -> argparse.Argument
     p.add_argument(
         "--model_type",
         type=str,
-        choices=["auto", "flow_matching", "autoregressive", "masked_diffusion"],
+        choices=["auto", "flow_matching", "autoregressive", "masked_diffusion", "uniform_diffusion"],
         default=default_model_type,
     )
     p.add_argument("--ckpt", type=str, default=None)
