@@ -15,8 +15,10 @@ from model import (
     BOS_TOKEN_ID,
     FlowMatchingTransformer,
     MaskedDiffusionTrajectoryTransformer,
+    UniformDiffusionTrajectoryTransformer,
     build_warmup_cosine_lr_scheduler,
     forward_process,
+    uniform_forward_process,
 )
 
 
@@ -139,6 +141,41 @@ def masked_diffusion_loss(
     return token_loss.sum() / valid_mask.sum().clamp_min(1)
 
 
+def uniform_diffusion_loss(
+    model: UniformDiffusionTrajectoryTransformer,
+    batch: dict,
+    device: torch.device,
+    min_noise_prob: float = 0.15,
+    max_noise_prob: float = 1.0,
+) -> torch.Tensor:
+    map_tensor = batch["map"].to(device)
+    clean = batch["clean_actions"].to(device)
+    valid_mask = clean != PAD_ACTION
+    noisy, noise_positions, p_noise = uniform_forward_process(
+        clean,
+        valid_mask=valid_mask,
+        min_noise_prob=min_noise_prob,
+        max_noise_prob=max_noise_prob,
+    )
+
+    # Ensure each sequence contributes at least one supervised denoising target.
+    for i in range(clean.shape[0]):
+        if not bool(noise_positions[i].any()):
+            candidates = torch.nonzero(valid_mask[i], as_tuple=False).squeeze(-1)
+            if int(candidates.numel()) > 0:
+                chosen = candidates[torch.randint(candidates.numel(), (1,), device=device)]
+                noise_positions[i, chosen] = True
+                original = clean[i, chosen]
+                delta = torch.randint(1, EOS_ACTION, size=original.shape, device=device)
+                noisy[i, chosen] = ((original - 1 + delta) % EOS_ACTION) + 1
+
+    pad_mask = clean == PAD_ACTION
+    logits = model(noisy, map_tensor, pad_mask=pad_mask)
+    token_loss = F.cross_entropy(logits[noise_positions], clean[noise_positions], reduction="none")
+    token_loss = token_loss / p_noise[noise_positions].clamp_min(1e-6)
+    return token_loss.sum() / valid_mask.sum().clamp_min(1)
+
+
 def train(args):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     dataset = GridDenoiseDataset(
@@ -166,6 +203,14 @@ def train(args):
         opt = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
     elif args.model_type == "masked_diffusion":
         model = MaskedDiffusionTrajectoryTransformer(
+            embed_dim=args.embed_dim,
+            n_layers=args.layers,
+            n_heads=args.heads,
+            ff_dim=args.ff_dim,
+        ).to(device)
+        opt = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
+    elif args.model_type == "uniform_diffusion":
+        model = UniformDiffusionTrajectoryTransformer(
             embed_dim=args.embed_dim,
             n_layers=args.layers,
             n_heads=args.heads,
@@ -201,7 +246,7 @@ def train(args):
                 loss = fm_loss(model, batch, device, pad_noise_prob=args.pad_noise_prob)
             elif args.model_type == "autoregressive":
                 loss = ar_loss(model, batch, device)
-            else:
+            elif args.model_type == "masked_diffusion":
                 loss = masked_diffusion_loss(
                     model,
                     batch,
@@ -209,8 +254,16 @@ def train(args):
                     min_mask_prob=args.mask_min_prob,
                     max_mask_prob=args.mask_max_prob,
                 )
+            else:
+                loss = uniform_diffusion_loss(
+                    model,
+                    batch,
+                    device,
+                    min_noise_prob=args.mask_min_prob,
+                    max_noise_prob=args.mask_max_prob,
+                )
             loss.backward()
-            if args.model_type in ("autoregressive", "masked_diffusion"):
+            if args.model_type in ("autoregressive", "masked_diffusion", "uniform_diffusion"):
                 torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
             opt.step()
             if scheduler is not None:
@@ -264,7 +317,7 @@ def apply_model_size_preset(args: argparse.Namespace) -> argparse.Namespace:
 
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser()
-    p.add_argument("--model_type", type=str, choices=["flow_matching", "autoregressive", "masked_diffusion"], default="flow_matching")
+    p.add_argument("--model_type", type=str, choices=["flow_matching", "autoregressive", "masked_diffusion", "uniform_diffusion"], default="flow_matching")
     p.add_argument("--n_samples", type=int, default=1500)
     p.add_argument("--grid_size", type=int, default=8)
     p.add_argument("--max_seq_len", type=int, default=40)
