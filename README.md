@@ -13,8 +13,8 @@
   - 학습용 corruption은 noise level `(1-t)`에 비례: 각 샘플에서 `floor(valid_len * (1-t))`개 valid action만 랜덤 치환
   - PAD 위치는 corruption과 loss에서 제외
   - 첫 번째 학습 step에서 예시 `noisy/clean/pred token`, `t`, token별 MSE 일부, 최종 loss를 디버그 출력
-- `eval.py`: Flow Matching / Autoregressive / Masked Diffusion을 모두 지원하는 통합 평가 스크립트
-  - `--model_type`에 따라 Euler denoising, autoregressive generate, iterative masked denoising 중 하나를 실행
+- `eval.py`: Flow Matching / Autoregressive / Masked Diffusion / ELF를 모두 지원하는 통합 평가 스크립트
+  - `--model_type`에 따라 Euler denoising, autoregressive generate, iterative masked denoising, ELF denoising 중 하나를 실행
   - 공통 데이터 로딩, metric 집계(`valid_token_acc`, `trimmed_exact_match`, `goal_reached` 등), JSON 저장, plot 저장 경로를 공유
 
 ## 실행 예시
@@ -62,7 +62,21 @@ python train.py --model_type elf --model_size base --n_samples 1500 --epochs 25 
 # 또는 python train_elf.py --n_samples 1500 --epochs 25
 ```
 
-> 현재 통합 `eval.py`는 Flow Matching / Autoregressive / Masked Diffusion 평가를 지원하며, ELF 체크포인트 평가는 별도 샘플링 루틴이 필요합니다.
+- `eval.py --model_type elf`
+  - Gaussian embedding noise에서 시작해 ELF denoiser를 `--steps`만큼 반복 적용한 뒤 action token으로 디코딩합니다.
+  - 기본은 embedding similarity head를 사용하고, `--elf_use_decoder_head`를 주면 마지막에 ELF decoder head logits로 token을 선택합니다.
+  - `--elf_self_cond_cfg_scale`, `--elf_noise_scale`, `--decode`, `--temperature`, `--save_step_decodes`를 조절할 수 있습니다.
+- `eval_elf.py`
+  - `eval.py --model_type elf`를 호출하는 얇은 래퍼
+  - 기본 체크포인트: `checkpoints/elf_action.pt`
+
+평가 예시:
+
+```bash
+python eval.py --model_type elf --ckpt checkpoints/elf_action.pt --steps 25 --num_eval_samples 10
+# 또는 python eval_elf.py --steps 25 --num_eval_samples 10
+python eval.py --model_type elf --ckpt checkpoints/elf_action.pt --steps 25 --elf_use_decoder_head
+```
 
 ## Masked Diffusion trajectory 모델
 
@@ -107,12 +121,13 @@ python eval.py --model_type autoregressive --ckpt checkpoints/ar_trajectory.pt -
 
 ## 통합 평가 스크립트
 
-`eval.py` 하나에서 세 모델을 모두 평가합니다. 별도 `eval_ar.py`, `eval_masked_diffusion.py` 파일은 두지 않고, `--model_type`만 바꿔 같은 데이터 로딩, metric 집계, JSON 저장, plot 저장 경로를 공유합니다.
+`eval.py` 하나에서 네 모델을 모두 평가합니다. 별도 `eval_ar.py`, `eval_masked_diffusion.py` 파일은 두지 않고, ELF용 `eval_elf.py`만 편의 래퍼로 제공합니다. 기본적으로 `--model_type`만 바꿔 같은 데이터 로딩, metric 집계, JSON 저장, plot 저장 경로를 공유합니다.
 
 ```bash
 python eval.py --model_type flow_matching --ckpt checkpoints/fm_denoiser.pt --steps 25
 python eval.py --model_type autoregressive --ckpt checkpoints/ar_trajectory.pt --decode argmax
 python eval.py --model_type masked_diffusion --ckpt checkpoints/masked_diffusion.pt --mask_ratio 1.0 --steps 8
+python eval.py --model_type elf --ckpt checkpoints/elf_action.pt --steps 25
 ```
 
 ## 모델 사이즈 설정(config.yaml)
