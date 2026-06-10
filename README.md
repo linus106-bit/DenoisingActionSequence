@@ -6,7 +6,7 @@
 - `model/flow_matching.py`: map encoder + action embedding + time embedding + transformer 기반 velocity field 예측기
 - `model/autoregressive.py`: map 조건부 autoregressive trajectory 생성기
 - `model/masked_diffusion.py`: mask token 기반 병렬 action 복원 transformer
-- `elf_model.py`: ELF 스타일 denoiser/decoder action transformer와 혼합 학습 objective
+- `model/elf.py`: ELF 스타일 denoiser/decoder action transformer와 혼합 학습 objective
 - `model/common.py`: 모델들이 공유하는 embedding / map encoder / token 상수
 - `train.py`: Flow Matching / Autoregressive / Masked Diffusion / ELF 학습 통합 엔트리포인트
   - 학습은 `max_seq_len` 전체 포지션에 대해 loss를 계산해 고정 길이 시퀀스 동작을 유지
@@ -40,12 +40,12 @@ python train.py --model_type elf --model_size base --n_samples 1500 --epochs 25 
 - **Flow Matching** (`flow_matching`): clean token embedding과 noisy token embedding 사이의 연속 경로 `x_t`에서 velocity를 예측합니다. 평가 시 Euler 적분으로 noisy sequence를 점진적으로 clean embedding 쪽으로 이동시킨 뒤 token으로 디코딩합니다.
 - **Autoregressive** (`autoregressive`): BOS에서 시작해 이전 token들을 조건으로 다음 action token을 순차 생성합니다. teacher forcing cross entropy로 학습하며 PAD는 loss에서 제외합니다.
 - **Masked Diffusion** (`masked_diffusion`): clean action sequence의 PAD가 아닌 위치 일부를 `MASK_TOKEN_ID=7`로 치환하고, LLaDA처럼 timestep embedding 없이 map 조건과 양방향 Transformer encoder로 마스킹된 위치의 원래 token을 병렬 복원합니다. loss는 PAD 위치와 마스킹되지 않은 위치를 제외하고, sampled mask probability로 reweight합니다.
-- **ELF** (`elf`): `elf_model.py`의 `ELFActionTransformer`를 학습합니다. denoiser step에서는 noisy embedding에서 clean embedding/velocity를 맞추고, decoder step에서는 action token CE를 섞어 학습하며 self-conditioning 설정을 CLI로 조절할 수 있습니다.
+- **ELF** (`elf`): `model/elf.py`의 `ELFActionTransformer`를 학습합니다. denoiser step에서는 noisy embedding에서 clean embedding/velocity를 맞추고, decoder step에서는 action token CE를 섞어 학습하며 self-conditioning 설정을 CLI로 조절할 수 있습니다.
 
 
 ## ELF action 모델 학습
 
-`elf_model.py`에 추가된 ELF 스타일 모델을 `train.py --model_type elf`로 직접 학습할 수 있습니다. 학습 루프는 `ELFTrainingConfig`를 CLI 인자로 구성하고, 첫 번째 step에서 CE/L2 loss, decoder step 비율, 예측 token 디버그를 출력합니다.
+`model/elf.py`에 추가된 ELF 스타일 모델을 `train.py --model_type elf`로 직접 학습할 수 있습니다. 학습 루프는 `ELFTrainingConfig`를 CLI 인자로 구성하고, 첫 번째 step에서 CE/L2 loss, decoder step 비율, 예측 token 디버그를 출력합니다.
 
 - `train.py --model_type elf`
   - `ELFActionTransformer` 생성 및 AdamW optimizer 사용

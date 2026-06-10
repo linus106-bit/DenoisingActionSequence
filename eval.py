@@ -11,8 +11,8 @@ import numpy as np
 import torch
 
 from data_utils import ACTIONS, EOS_ACTION, GridDenoiseDataset, PAD_ACTION
-from elf_model import ELFActionTransformer
 from model import (
+    ELFActionTransformer,
     MASK_TOKEN_ID,
     AutoregressiveTrajectoryTransformer,
     FlowMatchingTransformer,

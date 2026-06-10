@@ -10,14 +10,19 @@ from .common import (
     resolve_warmup_steps,
     warmup_cosine_lr_lambda,
 )
+from .elf import ELFActionTransformer, ELFTrainingConfig, elf_action_loss, elf_optimizer_step
 from .flow_matching import FlowMatchingTransformer
 from .masked_diffusion import MaskedDiffusionTrajectoryTransformer, forward_process
 
 __all__ = [
     "AutoregressiveTrajectoryTransformer",
     "BOS_TOKEN_ID",
+    "ELFActionTransformer",
+    "ELFTrainingConfig",
     "EOS_TOKEN_ID",
     "FlowMatchingTransformer",
+    "elf_action_loss",
+    "elf_optimizer_step",
     "MASK_TOKEN_ID",
     "MaskedDiffusionTrajectoryTransformer",
     "forward_process",

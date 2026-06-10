@@ -9,8 +9,10 @@ import yaml
 from torch.utils.data import DataLoader
 
 from data_utils import EOS_ACTION, GridDenoiseDataset, PAD_ACTION
-from elf_model import ELFActionTransformer, ELFTrainingConfig, elf_action_loss
 from model import (
+    ELFActionTransformer,
+    ELFTrainingConfig,
+    elf_action_loss,
     MASK_TOKEN_ID,
     AutoregressiveTrajectoryTransformer,
     BOS_TOKEN_ID,
