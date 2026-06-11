@@ -10,6 +10,9 @@ from torch.utils.data import DataLoader
 
 from data_utils import EOS_ACTION, GridDenoiseDataset, PAD_ACTION
 from model import (
+    ELFActionTransformer,
+    ELFTrainingConfig,
+    elf_action_loss,
     MASK_TOKEN_ID,
     AutoregressiveTrajectoryTransformer,
     BOS_TOKEN_ID,
@@ -172,6 +175,28 @@ def train(args):
             ff_dim=args.ff_dim,
         ).to(device)
         opt = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
+    elif args.model_type == "elf":
+        model = ELFActionTransformer(
+            embed_dim=args.embed_dim,
+            n_layers=args.layers,
+            n_heads=args.heads,
+            ff_dim=args.ff_dim,
+        ).to(device)
+        opt = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
+        elf_cfg = ELFTrainingConfig(
+            denoiser_p_mean=args.elf_denoiser_p_mean,
+            denoiser_p_std=args.elf_denoiser_p_std,
+            denoiser_noise_scale=args.elf_denoiser_noise_scale,
+            decoder_prob=args.elf_decoder_prob,
+            decoder_noise_scale=args.elf_decoder_noise_scale,
+            decoder_p_mean=args.elf_decoder_p_mean,
+            decoder_p_std=args.elf_decoder_p_std,
+            self_cond_prob=args.elf_self_cond_prob,
+            self_cond_cfg_min=args.elf_self_cond_cfg_min,
+            self_cond_cfg_max=args.elf_self_cond_cfg_max,
+            t_eps=args.elf_t_eps,
+            grad_clip_norm=args.elf_grad_clip_norm,
+        )
     else:
         raise ValueError(f"Unsupported --model_type: {args.model_type}")
 
@@ -189,19 +214,22 @@ def train(args):
         f"min_lr_ratio={args.min_lr_ratio}"
     )
 
+    if args.model_type != "elf":
+        elf_cfg = None
+
     for epoch in range(1, args.epochs + 1):
         model.train()
         running = 0.0
         for batch in loader:
             opt.zero_grad(set_to_none=True)
-            need_debug = args.model_type == "flow_matching" and epoch == 1 and running == 0.0
+            need_debug = args.model_type in ("flow_matching", "elf") and epoch == 1 and running == 0.0
             if args.model_type == "flow_matching" and need_debug:
                 loss, dbg = fm_loss(model, batch, device, return_debug=True, pad_noise_prob=args.pad_noise_prob)
             elif args.model_type == "flow_matching":
                 loss = fm_loss(model, batch, device, pad_noise_prob=args.pad_noise_prob)
             elif args.model_type == "autoregressive":
                 loss = ar_loss(model, batch, device)
-            else:
+            elif args.model_type == "masked_diffusion":
                 loss = masked_diffusion_loss(
                     model,
                     batch,
@@ -209,9 +237,15 @@ def train(args):
                     min_mask_prob=args.mask_min_prob,
                     max_mask_prob=args.mask_max_prob,
                 )
+            elif args.model_type == "elf" and need_debug:
+                loss, dbg = elf_action_loss(model, batch, device, cfg=elf_cfg, return_debug=True)
+            else:
+                loss = elf_action_loss(model, batch, device, cfg=elf_cfg)
             loss.backward()
             if args.model_type in ("autoregressive", "masked_diffusion"):
                 torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+            elif args.model_type == "elf" and elf_cfg is not None and elf_cfg.grad_clip_norm > 0:
+                torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=elf_cfg.grad_clip_norm)
             opt.step()
             if scheduler is not None:
                 scheduler.step()
@@ -219,9 +253,14 @@ def train(args):
 
             if need_debug:
                 print("[Debug:first-step] t:", round(dbg["t0"], 4))
-                print("[Debug:first-step] noisy[0]:", dbg["noisy"].tolist())
+                if args.model_type == "flow_matching":
+                    print("[Debug:first-step] noisy[0]:", dbg["noisy"].tolist())
+                elif args.model_type == "elf":
+                    print("[Debug:first-step] elf_ce_loss:", round(dbg["ce_loss"], 6))
+                    print("[Debug:first-step] elf_l2_loss:", round(dbg["l2_loss"], 6))
+                    print("[Debug:first-step] elf_decoder_fraction:", round(dbg["decoder_fraction"], 6))
                 print("[Debug:first-step] clean[0]:", dbg["clean"].tolist())
-                print("[Debug:first-step] pred_token(argmax, x0+v)[0]:", _tokenize_for_print(dbg["pred_tokens"]))
+                print("[Debug:first-step] pred_token(argmax)[0]:", _tokenize_for_print(dbg["pred_tokens"]))
                 print("[Debug:first-step] token_mse_head(first 10):", dbg["mse_head"].tolist())
                 print("[Debug:first-step] loss:", round(dbg["loss"], 6))
 
@@ -264,7 +303,7 @@ def apply_model_size_preset(args: argparse.Namespace) -> argparse.Namespace:
 
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser()
-    p.add_argument("--model_type", type=str, choices=["flow_matching", "autoregressive", "masked_diffusion"], default="flow_matching")
+    p.add_argument("--model_type", type=str, choices=["flow_matching", "autoregressive", "masked_diffusion", "elf"], default="flow_matching")
     p.add_argument("--n_samples", type=int, default=1500)
     p.add_argument("--grid_size", type=int, default=8)
     p.add_argument("--max_seq_len", type=int, default=40)
@@ -284,6 +323,18 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--pad_noise_prob", type=float, default=1.0)
     p.add_argument("--mask_min_prob", type=float, default=0.15)
     p.add_argument("--mask_max_prob", type=float, default=1.0)
+    p.add_argument("--elf_denoiser_p_mean", type=float, default=ELFTrainingConfig.denoiser_p_mean)
+    p.add_argument("--elf_denoiser_p_std", type=float, default=ELFTrainingConfig.denoiser_p_std)
+    p.add_argument("--elf_denoiser_noise_scale", type=float, default=ELFTrainingConfig.denoiser_noise_scale)
+    p.add_argument("--elf_decoder_prob", type=float, default=ELFTrainingConfig.decoder_prob)
+    p.add_argument("--elf_decoder_noise_scale", type=float, default=ELFTrainingConfig.decoder_noise_scale)
+    p.add_argument("--elf_decoder_p_mean", type=float, default=ELFTrainingConfig.decoder_p_mean)
+    p.add_argument("--elf_decoder_p_std", type=float, default=ELFTrainingConfig.decoder_p_std)
+    p.add_argument("--elf_self_cond_prob", type=float, default=ELFTrainingConfig.self_cond_prob)
+    p.add_argument("--elf_self_cond_cfg_min", type=float, default=ELFTrainingConfig.self_cond_cfg_min)
+    p.add_argument("--elf_self_cond_cfg_max", type=float, default=ELFTrainingConfig.self_cond_cfg_max)
+    p.add_argument("--elf_t_eps", type=float, default=ELFTrainingConfig.t_eps)
+    p.add_argument("--elf_grad_clip_norm", type=float, default=ELFTrainingConfig.grad_clip_norm)
     p.add_argument("--out", type=str, default="checkpoints/fm_denoiser.pt")
     return p
 

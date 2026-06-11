@@ -12,6 +12,7 @@ import torch
 
 from data_utils import ACTIONS, EOS_ACTION, GridDenoiseDataset, PAD_ACTION
 from model import (
+    ELFActionTransformer,
     MASK_TOKEN_ID,
     AutoregressiveTrajectoryTransformer,
     FlowMatchingTransformer,
@@ -22,32 +23,41 @@ MODEL_CKPT_DEFAULTS = {
     "flow_matching": "checkpoints/fm_denoiser.pt",
     "autoregressive": "checkpoints/ar_trajectory.pt",
     "masked_diffusion": "checkpoints/masked_diffusion.pt",
+    "elf": "checkpoints/elf_action.pt",
 }
 MODEL_PLOT_DEFAULTS = {
     "flow_matching": "artifacts/eval_plots",
     "autoregressive": "artifacts/eval_ar_plots",
     "masked_diffusion": "artifacts/eval_masked_diffusion_plots",
+    "elf": "artifacts/eval_elf_plots",
 }
 MODEL_RESULTS_DEFAULTS = {
     "flow_matching": "artifacts/eval_results.json",
     "autoregressive": "artifacts/eval_ar_results.json",
     "masked_diffusion": "artifacts/eval_masked_diffusion_results.json",
+    "elf": "artifacts/eval_elf_results.json",
 }
 MODEL_DECODE_DEFAULTS = {
     "flow_matching": "sample",
     "autoregressive": "argmax",
     "masked_diffusion": "argmax",
+    "elf": "argmax",
 }
 
 
 def decode_actions_from_embeddings(
-    model: FlowMatchingTransformer, seq_emb: torch.Tensor, mode: str = "argmax"
+    model: FlowMatchingTransformer | ELFActionTransformer,
+    seq_emb: torch.Tensor,
+    mode: str = "argmax",
+    temperature: float = 1.0,
 ) -> torch.Tensor:
     # seq_emb: (L, D) -> logits: (L, 7; token 0 is unused, EOS=5, PAD=6)
     logits = model.action_logits_from_embeddings(seq_emb)
     logits[..., 0] = float("-inf")
+    if temperature <= 0:
+        raise ValueError("temperature must be positive")
     if mode == "sample":
-        probs = torch.softmax(logits, dim=-1)
+        probs = torch.softmax(logits / temperature, dim=-1)
         return torch.multinomial(probs, num_samples=1).squeeze(-1)
     if mode == "argmax":
         return logits.argmax(dim=-1)
@@ -265,6 +275,13 @@ def load_model(model_type: str, cfg: dict, device: torch.device):
             n_heads=cfg["heads"],
             ff_dim=ff_dim,
         ).to(device)
+    if model_type == "elf":
+        return ELFActionTransformer(
+            embed_dim=cfg["embed_dim"],
+            n_layers=cfg["layers"],
+            n_heads=cfg["heads"],
+            ff_dim=ff_dim,
+        ).to(device)
     raise ValueError(f"Unsupported --model_type: {model_type}")
 
 
@@ -476,6 +493,115 @@ def evaluate_masked_diffusion_sample(
     }
 
 
+@torch.no_grad()
+def elf_denoise(
+    model: ELFActionTransformer,
+    map_tensor: torch.Tensor,
+    seq_len: int,
+    steps: int,
+    decode: str,
+    temperature: float,
+    self_cond_cfg_scale: float,
+    noise_scale: float,
+    use_decoder_head: bool,
+    save_step_decodes: bool,
+) -> tuple[torch.Tensor, list[list[int]]]:
+    if temperature <= 0:
+        raise ValueError("temperature must be positive")
+    if noise_scale <= 0:
+        raise ValueError("--elf_noise_scale must be positive")
+    batch_size = map_tensor.shape[0]
+    z = torch.randn((batch_size, seq_len, model.embed_dim), device=map_tensor.device) * noise_scale
+    mask = torch.ones((batch_size, seq_len), dtype=torch.float32, device=map_tensor.device)
+    cfg_scale = torch.full((batch_size,), self_cond_cfg_scale, dtype=z.dtype, device=z.device)
+    step_decodes: list[list[int]] = []
+    self_cond = torch.zeros_like(z)
+
+    for step in range(steps):
+        t_value = min(step / max(steps, 1), 1.0 - 1e-4)
+        t = torch.full((batch_size,), t_value, dtype=z.dtype, device=z.device)
+        model_input = torch.cat([z, self_cond], dim=-1)
+        x_pred, _ = model(
+            model_input,
+            t,
+            map_tensor,
+            mask,
+            self_cond_cfg_scale=cfg_scale,
+            deterministic=True,
+        )
+        denom = max(1.0 - t_value, 1e-4)
+        dt = 1.0 / max(steps, 1)
+        z = z + dt * (x_pred - z) / denom
+        self_cond = x_pred
+        if save_step_decodes:
+            step_pred = decode_actions_from_embeddings(model, z[0], mode=decode, temperature=temperature).cpu().tolist()
+            step_decodes.append(step_pred)
+
+    if use_decoder_head:
+        t = torch.ones((batch_size,), dtype=z.dtype, device=z.device)
+        decoder_active = torch.ones((batch_size,), dtype=z.dtype, device=z.device)
+        logits_input = torch.cat([z, self_cond], dim=-1)
+        _, decoder_logits = model(
+            logits_input,
+            t,
+            map_tensor,
+            mask,
+            self_cond_cfg_scale=cfg_scale,
+            decoder_step_active=decoder_active,
+            deterministic=True,
+        )
+        decoder_logits[..., 0] = float("-inf")
+        if decode == "sample":
+            probs = torch.softmax(decoder_logits[0] / temperature, dim=-1)
+            pred = torch.multinomial(probs, num_samples=1).squeeze(-1)
+        elif decode == "argmax":
+            pred = decoder_logits[0].argmax(dim=-1)
+        else:
+            raise ValueError(f"Unsupported decode mode: {decode}")
+    else:
+        pred = decode_actions_from_embeddings(model, z[0], mode=decode, temperature=temperature)
+    return pred.cpu(), step_decodes
+
+
+def evaluate_elf_sample(model: ELFActionTransformer, batch: dict, device: torch.device, args) -> dict:
+    map_tensor = batch["map"].unsqueeze(0).to(device)
+    clean_actions = batch["clean_actions"][: args.max_seq_len_resolved].cpu()
+    clean_valid_len = int((clean_actions != PAD_ACTION).sum().item())
+
+    pred, step_decodes = elf_denoise(
+        model=model,
+        map_tensor=map_tensor,
+        seq_len=args.max_seq_len_resolved,
+        steps=args.steps,
+        decode=args.decode,
+        temperature=args.temperature,
+        self_cond_cfg_scale=args.elf_self_cond_cfg_scale,
+        noise_scale=args.elf_noise_scale,
+        use_decoder_head=args.elf_use_decoder_head,
+        save_step_decodes=args.save_step_decodes,
+    )
+
+    wall = batch["map"][0].numpy()
+    start_cell = tuple(torch.nonzero(batch["map"][1], as_tuple=False)[0].tolist())
+    goal_cell = tuple(torch.nonzero(batch["map"][2], as_tuple=False)[0].tolist())
+    pred_seq_metrics = sequence_metrics(pred, clean_actions, clean_valid_len)
+    pred_traj_metrics = trajectory_metrics(wall, start_cell, goal_cell, trim_at_stop(pred.tolist()))
+
+    return {
+        "wall": wall,
+        "start_cell": start_cell,
+        "goal_cell": goal_cell,
+        "clean_list": trim_at_stop(clean_actions.tolist()),
+        "pred_list": trim_at_stop(pred.tolist()),
+        "pred_sequence_metrics": pred_seq_metrics,
+        "pred_trajectory_metrics": pred_traj_metrics,
+        "step_decodes": step_decodes,
+        "elf_use_decoder_head": args.elf_use_decoder_head,
+        "elf_self_cond_cfg_scale": args.elf_self_cond_cfg_scale,
+        "elf_noise_scale": args.elf_noise_scale,
+    }
+
+
 def add_common_sample_fields(sample_idx: int, result: dict, plot_path: Path) -> dict:
     return {
         "sample_idx": sample_idx,
@@ -496,6 +622,8 @@ def evaluate_sample(model, model_type: str, batch: dict, device: torch.device, a
         return evaluate_autoregressive_sample(model, batch, device, args)
     if model_type == "masked_diffusion":
         return evaluate_masked_diffusion_sample(model, batch, device, args)
+    if model_type == "elf":
+        return evaluate_elf_sample(model, batch, device, args)
     raise ValueError(f"Unsupported --model_type: {model_type}")
 
 
@@ -518,6 +646,15 @@ def append_sample_result(model_type: str, sample_idx: int, result: dict, plot_pa
             {
                 "mask_ratio": result["mask_ratio"],
                 "masked_actions": result["masked_list"],
+            }
+        )
+    elif model_type == "elf":
+        sample.update(
+            {
+                "step_decodes": result["step_decodes"],
+                "elf_use_decoder_head": result["elf_use_decoder_head"],
+                "elf_self_cond_cfg_scale": result["elf_self_cond_cfg_scale"],
+                "elf_noise_scale": result["elf_noise_scale"],
             }
         )
     return sample
@@ -555,6 +692,16 @@ def plot_sample(model_type: str, result: dict, plot_path: Path, args) -> None:
             result["masked_list"],
             result["pred_list"],
             plot_path,
+        )
+    elif model_type == "elf":
+        plot_pred_vs_clean(
+            result["wall"],
+            result["start_cell"],
+            result["goal_cell"],
+            result["clean_list"],
+            result["pred_list"],
+            plot_path,
+            pred_title="ELF predicted path",
         )
     else:
         raise ValueError(f"Unsupported --model_type: {model_type}")
@@ -608,6 +755,9 @@ def run(args):
         "seed": args.seed,
         "temperature": args.temperature,
         "mask_ratio": args.mask_ratio if model_type == "masked_diffusion" else None,
+        "elf_use_decoder_head": args.elf_use_decoder_head if model_type == "elf" else None,
+        "elf_self_cond_cfg_scale": args.elf_self_cond_cfg_scale if model_type == "elf" else None,
+        "elf_noise_scale": args.elf_noise_scale if model_type == "elf" else None,
         "num_eval_samples": args.num_eval_samples,
         "grid_size": grid_size,
         "aggregate_pred_metrics": aggregate_numeric_metrics(sample_results),
@@ -627,7 +777,7 @@ def build_parser(default_model_type: str = "flow_matching") -> argparse.Argument
     p.add_argument(
         "--model_type",
         type=str,
-        choices=["auto", "flow_matching", "autoregressive", "masked_diffusion"],
+        choices=["auto", "flow_matching", "autoregressive", "masked_diffusion", "elf"],
         default=default_model_type,
     )
     p.add_argument("--ckpt", type=str, default=None)
@@ -640,6 +790,9 @@ def build_parser(default_model_type: str = "flow_matching") -> argparse.Argument
     p.add_argument("--decode", type=str, choices=["argmax", "sample"], default=None)
     p.add_argument("--temperature", type=float, default=1.0)
     p.add_argument("--mask_ratio", type=float, default=1.0)
+    p.add_argument("--elf_self_cond_cfg_scale", type=float, default=1.0)
+    p.add_argument("--elf_noise_scale", type=float, default=2.0)
+    p.add_argument("--elf_use_decoder_head", action="store_true")
     p.add_argument("--seed", type=int, default=0)
     p.add_argument("--save_step_decodes", action="store_true")
     return p

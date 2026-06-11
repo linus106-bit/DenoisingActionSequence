@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import contextlib
 from dataclasses import dataclass
 from typing import Dict, Optional, Tuple
 
@@ -8,7 +7,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from model.common import MapEncoder, NUM_ACTION_TOKENS, PAD_TOKEN_ID, SinusoidalPositionEmbedding, SinusoidalTimeEmbedding
+from .common import MapEncoder, NUM_ACTION_TOKENS, PAD_TOKEN_ID, SinusoidalPositionEmbedding, SinusoidalTimeEmbedding
 
 
 @dataclass
